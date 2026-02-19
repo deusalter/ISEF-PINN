@@ -1,0 +1,16 @@
+{
+  "norad_id": 25063,
+  "name": "ORBCOMM FM-5",
+  "orbit_type": "low-inclination",
+  "a_km": 7159.857537372019,
+  "inc_deg": 25.0,
+  "ecc": 0.001,
+  "period_s": 6029.309141660851,
+  "vanilla_test_rmse_km": 26982.47,
+  "fourier_nn_test_rmse_km": 124.51,
+  "fourier_pinn_test_rmse_km": 124.06,
+  "vanilla_train_rmse_km": 44.34,
+  "fourier_nn_train_rmse_km": 8.88,
+  "fourier_pinn_train_rmse_km": 8.95,
+  "pinn_improvement_pct": 99.54
+}

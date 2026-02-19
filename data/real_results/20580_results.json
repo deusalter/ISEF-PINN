@@ -1,0 +1,16 @@
+{
+  "norad_id": 20580,
+  "name": "HUBBLE (HST)",
+  "orbit_type": "diverse",
+  "a_km": 6917.085787080983,
+  "inc_deg": 28.470000000000002,
+  "ecc": 0.00028,
+  "period_s": 5725.266715260751,
+  "vanilla_test_rmse_km": 23770.52,
+  "fourier_nn_test_rmse_km": 119.28,
+  "fourier_pinn_test_rmse_km": 118.78,
+  "vanilla_train_rmse_km": 37.24,
+  "fourier_nn_train_rmse_km": 8.42,
+  "fourier_pinn_train_rmse_km": 6.99,
+  "pinn_improvement_pct": 99.5
+}

@@ -1,0 +1,10 @@
+{
+  "norad_id": 36508,
+  "name": "COSMOS 2251 DEB",
+  "a_km": 7230.6728124863175,
+  "inc_deg": 74.04,
+  "ecc": 0.01,
+  "period_s": 6118.980169971672,
+  "n_orbits": 5,
+  "n_points": 5000
+}

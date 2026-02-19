@@ -1,0 +1,10 @@
+{
+  "norad_id": 46984,
+  "name": "SENTINEL-6A",
+  "a_km": 7179.913177094975,
+  "inc_deg": 66.04,
+  "ecc": 0.0005,
+  "period_s": 6054.660126138752,
+  "n_orbits": 5,
+  "n_points": 5000
+}

@@ -1,0 +1,16 @@
+{
+  "norad_id": 44713,
+  "name": "STARLINK-1007",
+  "orbit_type": "constellation",
+  "a_km": 6925.348557938277,
+  "inc_deg": 53.0554,
+  "ecc": 0.00015,
+  "period_s": 5735.528412108337,
+  "vanilla_test_rmse_km": 21754.69,
+  "fourier_nn_test_rmse_km": 56.69,
+  "fourier_pinn_test_rmse_km": 56.29,
+  "vanilla_train_rmse_km": 42.79,
+  "fourier_nn_train_rmse_km": 7.47,
+  "fourier_pinn_train_rmse_km": 3.39,
+  "pinn_improvement_pct": 99.74
+}
