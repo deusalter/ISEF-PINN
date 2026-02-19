@@ -14,8 +14,22 @@ For our 400 km circular near-equatorial orbit with negligible drag (low
 BSTAR), the dominant perturbation is J2.  Over 5 orbits (~7.7 hours) drag
 and third-body effects are tiny, making this a clean J2-accuracy comparison.
 
-Our ground truth is a high-accuracy DOP853 numerical integration of the
-J2-perturbed ODE -- the same data on which the PINN was trained.
+Ground truth: DOP853 numerical integration of the J2-perturbed ODE (the same
+data the PINN was trained on).
+
+Initial condition alignment note
+---------------------------------
+SGP4 uses Kozai MEAN orbital elements internally, not the osculating elements
+that come directly from initial state vectors.  If the mean anomaly is left
+at 0, SGP4 places the satellite at a phase ~26.6 deg offset from our
+simulation's starting position [R_ORBIT, 0, 0], producing a spurious ~3100 km
+initial error that grows over time.
+
+We correct for this by binary-searching for the mean anomaly M0 that
+minimises the angular offset between SGP4's t=0 position and ours.  A small
+radial residual (~3 km) remains because the Kozai mean semi-major axis
+differs slightly from the osculating one -- this is an inherent limitation of
+comparing osculating-element simulations to SGP4.
 
 Outputs
 -------
@@ -32,8 +46,6 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import torch
-import torch.nn as nn
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -51,56 +63,72 @@ data      = np.load("data/orbital_data_j2.npy")           # (5000, 7)
 pinn_pred = np.load("data/pinn_j2_predictions.npy")        # (5000, 4)
 van_pred  = np.load("data/vanilla_j2_predictions.npy")     # (5000, 4)
 
-t_sec  = data[:, 0]      # seconds from epoch
-gt_xyz = data[:, 1:4]    # km, ECI
-n_pts  = len(t_sec)
+t_sec   = data[:, 0]      # seconds from epoch
+gt_xyz  = data[:, 1:4]    # km, ECI
+n_pts   = len(t_sec)
 N_TRAIN = int(n_pts * 0.20)
 
-# ── Build SGP4 satellite ───────────────────────────────────────────────────────
-print("Initialising SGP4 satellite...")
-norm      = NormalizationParams(r_ref=R_ORBIT)
+# ── Build SGP4 satellite with aligned initial condition ───────────────────────
+print("Aligning SGP4 initial conditions...")
 n_rad_s   = math.sqrt(MU / R_ORBIT ** 3)   # Keplerian mean motion [rad/s]
 n_rad_min = n_rad_s * 60.0                 # [rad/min]
 T_sec     = 2.0 * math.pi / n_rad_s       # orbital period [s]
 
-# Epoch: Jan 1, 2024 00:00:00 UTC -- matches our simulation t=0
-EPOCH_YYDDD = 24001.00000000   # YYDDD.DDDDDDDD
-JD_EPOCH    = 2460310.5        # Julian date for 2024-01-01 00:00:00 UTC
+EPOCH_YYDDD = 24001.00000000   # Jan 1, 2024 -- matches our simulation t=0
+JD_EPOCH    = 2460310.5        # Julian date
 
-satrec = Satrec()
-satrec.sgp4init(
-    WGS72,          # gravity model
-    "i",            # mode: improved
-    99999,          # satellite catalog number (synthetic)
-    EPOCH_YYDDD,    # epoch
-    1.0e-8,         # bstar (near-zero drag)
-    0.0,            # ndot  (first deriv of mean motion -- zeroed)
-    0.0,            # nddot (second deriv -- zeroed)
-    1.0e-7,         # ecco  (near-zero eccentricity → circular orbit)
-    0.0,            # argpo (argument of perigee [rad])
-    0.0,            # inclo (inclination [rad]) -- equatorial
-    0.0,            # mo    (mean anomaly [rad]) -- starts at x-axis
-    n_rad_min,      # no_kozai (mean motion [rad/min])
-    0.0,            # nodeo (RAAN [rad])
-)
+def build_satrec(M0_rad: float) -> Satrec:
+    s = Satrec()
+    s.sgp4init(
+        WGS72, "i", 99999, EPOCH_YYDDD,
+        1.0e-8,   # bstar  (near-zero drag)
+        0.0,      # ndot
+        0.0,      # nddot
+        1.0e-7,   # ecco   (near-zero eccentricity)
+        0.0,      # argpo
+        0.0,      # inclo  (equatorial)
+        M0_rad,   # mo     (mean anomaly -- tuned below)
+        n_rad_min,
+        0.0,      # nodeo  (RAAN)
+    )
+    return s
+
+# Binary-search for M0 such that SGP4 starts at angle=0 (y≈0, x>0)
+# SGP4 with M0=0 places satellite at ~-26.6 deg due to Kozai mean-element offset
+lo, hi = 0.0, 2 * math.pi
+for _ in range(60):
+    mid = (lo + hi) / 2.0
+    s_tmp = build_satrec(mid)
+    _, r_tmp, _ = s_tmp.sgp4(JD_EPOCH, 0.0)
+    angle = math.atan2(r_tmp[1], r_tmp[0])
+    if angle < 0:
+        lo = mid
+    else:
+        hi = mid
+
+M0_ALIGNED = (lo + hi) / 2.0
+satrec = build_satrec(M0_ALIGNED)
+_, r0, _ = satrec.sgp4(JD_EPOCH, 0.0)
+residual_km = math.sqrt((r0[0] - R_ORBIT)**2 + r0[1]**2 + r0[2]**2)
+print(f"  M0 = {math.degrees(M0_ALIGNED):.4f} deg")
+print(f"  SGP4 t=0 position : [{r0[0]:.3f}, {r0[1]:.6f}, 0] km")
+print(f"  Our  t=0 position : [{R_ORBIT:.3f}, 0, 0] km")
+print(f"  Residual (mean vs osculating elements): {residual_km:.3f} km")
 
 # ── Propagate SGP4 ────────────────────────────────────────────────────────────
-print(f"Propagating {n_pts} SGP4 points...")
+print(f"\nPropagating {n_pts} SGP4 points...")
 sgp4_xyz = np.zeros((n_pts, 3))
 t0 = time.perf_counter()
 for i, t in enumerate(t_sec):
     e, r, v = satrec.sgp4(JD_EPOCH, t / 86400.0)
-    if e != 0:
-        sgp4_xyz[i] = np.nan
-    else:
-        sgp4_xyz[i] = r
+    sgp4_xyz[i] = r if e == 0 else np.nan
 t_sgp4_ms = (time.perf_counter() - t0) * 1e3
-print(f"  SGP4 propagation: {t_sgp4_ms:.1f} ms for {n_pts} points")
+print(f"  Done in {t_sgp4_ms:.1f} ms")
 
 # ── Compute errors ────────────────────────────────────────────────────────────
 err_pinn = np.linalg.norm(pinn_pred[:, 1:4] - gt_xyz, axis=1)
 err_van  = np.linalg.norm(van_pred[:, 1:4]  - gt_xyz, axis=1)
-err_sgp4 = np.linalg.norm(sgp4_xyz           - gt_xyz, axis=1)
+err_sgp4 = np.linalg.norm(sgp4_xyz          - gt_xyz, axis=1)
 
 mask_test = np.arange(n_pts) >= N_TRAIN
 
@@ -111,23 +139,30 @@ rmse_van  = test_rmse(err_van)
 rmse_pinn = test_rmse(err_pinn)
 rmse_sgp4 = test_rmse(err_sgp4)
 
-print(f"\n== J2-Perturbed Test RMSE (last 80%) ==")
+print(f"\n== J2-Perturbed Test RMSE (last 80%, 4 unseen orbits) ==")
 print(f"  Vanilla MLP         : {rmse_van:>10.2f} km")
 print(f"  Fourier PINN (ours) : {rmse_pinn:>10.2f} km")
 print(f"  SGP4                : {rmse_sgp4:>10.2f} km")
+print(f"\n  Note: SGP4 is more accurate than our PINN against this ground truth,")
+print(f"  as expected -- SGP4 is the industry standard for short-term propagation.")
+print(f"  Our PINN's main result is 98.2% improvement over the vanilla MLP baseline.")
 
 # ── Plot ──────────────────────────────────────────────────────────────────────
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-fig.suptitle("PINN vs SGP4: J2-Perturbed Orbital Propagation", fontsize=13, y=1.01)
+fig.suptitle(
+    "PINN vs SGP4: J2-Perturbed Orbital Propagation\n"
+    "(ground truth = DOP853 numerical integrator)",
+    fontsize=12, y=1.02
+)
 
-# Left: instantaneous error over time (log scale)
+# Left: instantaneous error vs time (log scale)
 ax = axes[0]
-ax.plot(t_sec / 3600, err_van,  color="tab:red",   lw=0.7, alpha=0.8,
+ax.plot(t_sec / 3600, err_van,  color="tab:red",    lw=0.7, alpha=0.8,
         label=f"Vanilla MLP ({rmse_van:.0f} km RMSE)")
-ax.plot(t_sec / 3600, err_pinn, color="tab:blue",  lw=1.0,
+ax.plot(t_sec / 3600, err_pinn, color="tab:blue",   lw=1.0,
         label=f"Fourier PINN (ours) ({rmse_pinn:.0f} km RMSE)")
-ax.plot(t_sec / 3600, err_sgp4, color="tab:green", lw=1.0, linestyle="--",
-        label=f"SGP4 ({rmse_sgp4:.1f} km RMSE)")
+ax.plot(t_sec / 3600, err_sgp4, color="tab:green",  lw=1.0, linestyle="--",
+        label=f"SGP4 ({rmse_sgp4:.0f} km RMSE)")
 ax.axvline(t_sec[N_TRAIN] / 3600, color="k", linestyle=":", lw=1.2,
            label="Train / test split")
 ax.set_xlabel("Time (hours)")
@@ -137,9 +172,9 @@ ax.set_yscale("log")
 ax.legend(fontsize=8)
 ax.grid(True, alpha=0.3)
 
-# Right: bar chart test RMSE
+# Right: bar chart of test RMSE
 ax = axes[1]
-labels = ["Vanilla\nMLP", "Fourier PINN\n(ours)", "SGP4"]
+labels = ["Vanilla\nMLP", "Fourier PINN\n(ours)", "SGP4\n(industry std)"]
 rmses  = [rmse_van, rmse_pinn, rmse_sgp4]
 colors = ["tab:red", "tab:blue", "tab:green"]
 bars   = ax.bar(labels, rmses, color=colors, alpha=0.85, edgecolor="k", lw=0.8)
@@ -148,7 +183,7 @@ for bar, v in zip(bars, rmses):
             bar.get_height() + max(rmses) * 0.02,
             f"{v:.0f} km", ha="center", va="bottom", fontsize=11)
 ax.set_ylabel("Test RMSE (km)")
-ax.set_title("Test-Set RMSE Comparison (5 orbits, 80% test)")
+ax.set_title("Test-Set RMSE (5 orbits, 80% extrapolation)")
 ax.grid(True, alpha=0.3, axis="y")
 ax.set_ylim(0, max(rmses) * 1.25)
 
@@ -162,15 +197,21 @@ print(f"\nSaved: {out_png}")
 table_path = os.path.join(FIGURES_DIR, "sgp4_table.txt")
 with open(table_path, "w") as f:
     f.write("J2-Perturbed Orbit -- SGP4 vs PINN vs Vanilla (Test RMSE)\n")
-    f.write("=" * 55 + "\n")
+    f.write("=" * 60 + "\n")
     f.write(f"{'Model':<25}  {'Test RMSE (km)':>14}\n")
-    f.write("-" * 55 + "\n")
+    f.write("-" * 60 + "\n")
     f.write(f"{'Vanilla MLP':<25}  {rmse_van:>14.2f}\n")
     f.write(f"{'Fourier PINN (ours)':<25}  {rmse_pinn:>14.2f}\n")
     f.write(f"{'SGP4':<25}  {rmse_sgp4:>14.2f}\n")
-    f.write("=" * 55 + "\n")
-    f.write(f"\nNote: Ground truth = DOP853 numerical integration of J2 ODE.\n")
-    f.write(f"SGP4 epoch: 2024-01-01 00:00:00 UTC, BSTAR = 1e-8 (near-zero drag).\n")
-    f.write(f"Orbit: 400 km circular, equatorial, {T_sec/60:.1f} min period.\n")
+    f.write("=" * 60 + "\n")
+    f.write("\nGround truth: DOP853 numerical integration of J2-perturbed ODE.\n")
+    f.write(f"SGP4 epoch:   2024-01-01 00:00:00 UTC, BSTAR = 1e-8 (near-zero drag).\n")
+    f.write(f"IC alignment: M0 = {math.degrees(M0_ALIGNED):.4f} deg (binary-searched to match\n")
+    f.write(f"              simulation start; {residual_km:.3f} km radial residual remains\n")
+    f.write(f"              due to Kozai mean vs osculating element difference).\n")
+    f.write(f"Orbit:        400 km circular, equatorial, {T_sec/60:.1f} min period.\n")
+    f.write("\nInterpretation: SGP4 is more accurate than our PINN against the numerical\n")
+    f.write("integrator, as expected. Our PINN's key result is 98.2% improvement over\n")
+    f.write("the vanilla MLP baseline (18905 km → 334 km).\n")
 print(f"Saved: {table_path}")
 print("\nDone.")
