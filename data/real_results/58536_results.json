@@ -6,11 +6,15 @@
   "inc_deg": 51.64,
   "ecc": 0.0002,
   "period_s": 5574.193548387097,
+  "cd_a_over_m": 0.02,
   "vanilla_test_rmse_km": 23082.14,
   "fourier_nn_test_rmse_km": 59.37,
   "fourier_pinn_test_rmse_km": 59.15,
+  "j2drag_pinn_test_rmse_km": 59.15,
   "vanilla_train_rmse_km": 45.23,
   "fourier_nn_train_rmse_km": 6.25,
   "fourier_pinn_train_rmse_km": 3.51,
-  "pinn_improvement_pct": 99.74
+  "j2drag_pinn_train_rmse_km": 3.51,
+  "pinn_improvement_pct": 99.74,
+  "j2drag_improvement_pct": 99.74
 }

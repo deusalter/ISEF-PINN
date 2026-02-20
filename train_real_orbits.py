@@ -2,10 +2,11 @@
 Batch training on real satellite orbits (SGP4 data) -- ISEF PINN Project
 ========================================================================
 
-For each satellite in the catalog, trains three models:
+For each satellite in the catalog, trains four models:
   1. Vanilla MLP    -- plain tanh NN, data-only
   2. Fourier NN     -- Fourier-featured NN, data-only
   3. Fourier PINN   -- Fourier-featured NN with J2-perturbed physics
+  4. Fourier PINN   -- Fourier-featured NN with J2 + atmospheric drag physics
 
 Data: loaded from data/real_orbits/{norad_id}.npy  (shape 5000x7)
 Meta: loaded from data/real_orbits/{norad_id}_meta.json
@@ -34,6 +35,7 @@ import torch.nn as nn
 import numpy as np
 
 from src.physics import J2, R_EARTH, NormalizationParams
+from src.atmosphere import drag_acceleration_torch
 from satellite_catalog import get_catalog, get_by_norad_id
 
 # -- Hyperparameters ----------------------------------------------------------
@@ -158,12 +160,103 @@ def compute_j2_physics_loss(model, t_col, R_NORM):
     return torch.mean(residual ** 2)
 
 
+def compute_j2_drag_physics_loss(model, t_col, R_NORM, norm, cd_a_over_m):
+    """J2 + atmospheric drag physics residual in normalized coordinates.
+
+    The model outputs normalized positions (pos_norm = pos_km / r_ref).
+    Time is also normalized (t_norm = t_s / t_ref).
+
+    Unit conversions applied here:
+      pos_km    = pos_norm * r_ref
+      vel_kms   = vel_norm * v_ref          (v_ref = r_ref / t_ref by definition)
+      a_drag_normalized = a_drag_kms2 * (t_ref^2 / r_ref)
+
+    Parameters
+    ----------
+    model         : FourierPINN
+    t_col         : (N,1) tensor, normalized time, requires_grad=True
+    R_NORM        : float, R_EARTH / a_km  (used in J2 term)
+    norm          : NormalizationParams with .r_ref, .v_ref, .t_ref
+    cd_a_over_m   : float or scalar tensor, ballistic coeff Cd*A/m  [m^2/kg]
+    """
+    pos = model(t_col)
+    ones = torch.ones(t_col.shape[0], dtype=torch.float64)
+
+    # Velocity (first derivatives of normalized position w.r.t. normalized time)
+    vel = []
+    for i in range(3):
+        v_i = torch.autograd.grad(
+            pos[:, i], t_col, ones,
+            create_graph=True, retain_graph=True
+        )[0]
+        vel.append(v_i)
+    vel = torch.cat(vel, dim=1)
+
+    # Acceleration (second derivatives)
+    acc = []
+    for i in range(3):
+        a_i = torch.autograd.grad(
+            vel[:, i], t_col, ones,
+            create_graph=True, retain_graph=True
+        )[0]
+        acc.append(a_i)
+    acc = torch.cat(acc, dim=1)
+
+    # Two-body gravity (normalized)
+    x_n = pos[:, 0:1]
+    y_n = pos[:, 1:2]
+    z_n = pos[:, 2:3]
+
+    r = torch.norm(pos, dim=1, keepdim=True).clamp(min=1e-3)
+    r3 = r ** 3
+    r5 = r ** 5
+
+    gravity = pos / r3
+
+    # J2 perturbation (normalized)
+    z_over_r_sq = (z_n / r) ** 2
+    j2_coeff = -1.5 * J2 * (R_NORM ** 2) / r5
+
+    a_j2_x = j2_coeff * x_n * (1.0 - 5.0 * z_over_r_sq)
+    a_j2_y = j2_coeff * y_n * (1.0 - 5.0 * z_over_r_sq)
+    a_j2_z = j2_coeff * z_n * (3.0 - 5.0 * z_over_r_sq)
+    a_j2 = torch.cat([a_j2_x, a_j2_y, a_j2_z], dim=1)
+
+    # Atmospheric drag (convert to physical units, call drag model, renormalize)
+    # pos_norm -> pos_km
+    pos_km = pos * norm.r_ref
+    # vel_norm (d pos_norm / d t_norm) -> vel_kms
+    # vel_kms = d(pos_norm * r_ref) / d(t_norm * t_ref) = vel_norm * (r_ref / t_ref)
+    # r_ref / t_ref == v_ref by definition
+    vel_kms = vel * norm.v_ref
+
+    # drag_acceleration_torch returns acceleration in km/s^2
+    a_drag_kms2 = drag_acceleration_torch(pos_km, vel_kms, cd_a_over_m)
+
+    # Convert drag back to normalized acceleration units:
+    # a_norm = a_physical * (t_ref^2 / r_ref)
+    a_drag_normalized = a_drag_kms2 * (norm.t_ref ** 2 / norm.r_ref)
+
+    # Full residual: acc + gravity - a_j2 - a_drag_normalized = 0
+    residual = acc + gravity - a_j2 - a_drag_normalized
+
+    return torch.mean(residual ** 2)
+
+
 # -- Training function (adapted from train_pinn_j2.py) ------------------------
 
 def train_model(model, t_train, pos_train, t_col, t_all, pos_all_km,
                 n_train, total_epochs, warmup_epochs, lam_phys,
-                R_NORM, norm, use_physics=False, tag="Model"):
-    """Train a model and return (best_test_rmse, best_train_rmse)."""
+                R_NORM, norm, use_physics=False, tag="Model",
+                physics_loss_fn=None):
+    """Train a model and return (best_test_rmse, best_train_rmse).
+
+    Parameters
+    ----------
+    physics_loss_fn : callable or None
+        If provided, used instead of the default compute_j2_physics_loss.
+        Signature: physics_loss_fn(model, t_col) -> scalar tensor.
+    """
 
     optimizer = torch.optim.Adam(model.parameters(), lr=LR_MAX)
     cosine_fn = lambda ep: (
@@ -179,6 +272,10 @@ def train_model(model, t_train, pos_train, t_col, t_all, pos_all_km,
     best_state = None
     refreshed = False
 
+    # Default physics loss: J2 only
+    if physics_loss_fn is None:
+        physics_loss_fn = lambda m, tc: compute_j2_physics_loss(m, tc, R_NORM)
+
     model.train()
     for ep in range(1, total_epochs + 1):
         optimizer.zero_grad()
@@ -190,7 +287,7 @@ def train_model(model, t_train, pos_train, t_col, t_all, pos_all_km,
         # Physics loss
         do_physics = use_physics and ep > warmup_epochs
         if do_physics:
-            pl = compute_j2_physics_loss(model, t_col, R_NORM)
+            pl = physics_loss_fn(model, t_col)
             total = dl + lam_phys * pl
             pv = pl.item()
         else:
@@ -244,8 +341,8 @@ def train_model(model, t_train, pos_train, t_col, t_all, pos_all_km,
 
 # -- Main ---------------------------------------------------------------------
 
-def train_satellite(norad_id, name, orbit_type, verbose=True):
-    """Train all three models for one satellite. Returns results dict or None."""
+def train_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022, verbose=True):
+    """Train all four models for one satellite. Returns results dict or None."""
 
     data_path = f"data/real_orbits/{norad_id}.npy"
     meta_path = f"data/real_orbits/{norad_id}_meta.json"
@@ -341,9 +438,33 @@ def train_satellite(norad_id, name, orbit_type, verbose=True):
         use_physics=True, tag="F-PINN",
     )
 
-    # Compute improvement
+    # -- Train Fourier PINN (data + J2 + Drag physics) -------------------------
+    if verbose:
+        print(f"\n  {'─' * 60}")
+        print(f"  Training Fourier PINN (J2+Drag, Cd*A/m={cd_a_over_m}, "
+              f"lambda={LAMBDA_PHYS})...")
+        print(f"  {'─' * 60}")
+
+    torch.manual_seed(42)
+    fourier_pinn_drag = FourierPINN().double()
+    j2drag_loss_fn = lambda m, tc: compute_j2_drag_physics_loss(
+        m, tc, R_NORM, norm, cd_a_over_m
+    )
+    drag_test_rmse, drag_train_rmse = train_model(
+        fourier_pinn_drag, t_train, pos_train, t_col, t_all, pos_km,
+        n_train, TOTAL_EPOCHS, WARMUP_EPOCHS, LAMBDA_PHYS,
+        R_NORM, norm,
+        use_physics=True, tag="J2+D",
+        physics_loss_fn=j2drag_loss_fn,
+    )
+
+    # Compute improvements
     pinn_improv = (
         (van_test_rmse - pinn_test_rmse) / van_test_rmse * 100
+        if van_test_rmse > 0 else 0.0
+    )
+    drag_improv = (
+        (van_test_rmse - drag_test_rmse) / van_test_rmse * 100
         if van_test_rmse > 0 else 0.0
     )
 
@@ -356,13 +477,17 @@ def train_satellite(norad_id, name, orbit_type, verbose=True):
         "inc_deg": meta.get("inc_deg", None),
         "ecc": meta.get("ecc", None),
         "period_s": meta.get("period_s", None),
+        "cd_a_over_m": cd_a_over_m,
         "vanilla_test_rmse_km": round(van_test_rmse, 2),
         "fourier_nn_test_rmse_km": round(nn_test_rmse, 2),
         "fourier_pinn_test_rmse_km": round(pinn_test_rmse, 2),
+        "j2drag_pinn_test_rmse_km": round(drag_test_rmse, 2),
         "vanilla_train_rmse_km": round(van_train_rmse, 2),
         "fourier_nn_train_rmse_km": round(nn_train_rmse, 2),
         "fourier_pinn_train_rmse_km": round(pinn_train_rmse, 2),
+        "j2drag_pinn_train_rmse_km": round(drag_train_rmse, 2),
         "pinn_improvement_pct": round(pinn_improv, 2),
+        "j2drag_improvement_pct": round(drag_improv, 2),
     }
 
     # Save per-satellite results
@@ -373,12 +498,14 @@ def train_satellite(norad_id, name, orbit_type, verbose=True):
 
     if verbose:
         print(f"\n  Results saved -> {result_path}")
-        print(f"  {'Model':<20s}  {'Train RMSE':>12s}  {'Test RMSE':>12s}")
-        print(f"  {'─' * 20}  {'─' * 12}  {'─' * 12}")
-        print(f"  {'Vanilla MLP':<20s}  {van_train_rmse:>10.2f} km  {van_test_rmse:>10.2f} km")
-        print(f"  {'Fourier NN':<20s}  {nn_train_rmse:>10.2f} km  {nn_test_rmse:>10.2f} km")
-        print(f"  {'Fourier PINN (J2)':<20s}  {pinn_train_rmse:>10.2f} km  {pinn_test_rmse:>10.2f} km")
-        print(f"  PINN improvement over Vanilla: {pinn_improv:+.1f}%")
+        print(f"  {'Model':<24s}  {'Train RMSE':>12s}  {'Test RMSE':>12s}")
+        print(f"  {'─' * 24}  {'─' * 12}  {'─' * 12}")
+        print(f"  {'Vanilla MLP':<24s}  {van_train_rmse:>10.2f} km  {van_test_rmse:>10.2f} km")
+        print(f"  {'Fourier NN':<24s}  {nn_train_rmse:>10.2f} km  {nn_test_rmse:>10.2f} km")
+        print(f"  {'Fourier PINN (J2)':<24s}  {pinn_train_rmse:>10.2f} km  {pinn_test_rmse:>10.2f} km")
+        print(f"  {'Fourier PINN (J2+Drag)':<24s}  {drag_train_rmse:>10.2f} km  {drag_test_rmse:>10.2f} km")
+        print(f"  J2 PINN improvement over Vanilla:      {pinn_improv:+.1f}%")
+        print(f"  J2+Drag PINN improvement over Vanilla:  {drag_improv:+.1f}%")
 
     return results
 
@@ -428,7 +555,8 @@ def main():
         print(f"{'=' * 70}")
 
         result = train_satellite(
-            sat.norad_id, sat.name, sat.orbit_type
+            sat.norad_id, sat.name, sat.orbit_type,
+            cd_a_over_m=sat.cd_a_over_m,
         )
 
         if result is not None:
@@ -436,16 +564,18 @@ def main():
 
     # -- Summary table --------------------------------------------------------
     if len(all_results) > 0:
-        print(f"\n\n{'=' * 100}")
+        print(f"\n\n{'=' * 120}")
         print("  SUMMARY -- All Satellites")
-        print(f"{'=' * 100}")
+        print(f"{'=' * 120}")
         print(
             f"  {'NORAD':>7s}  {'Name':<22s}  {'Type':<16s}  "
-            f"{'Vanilla':>10s}  {'F-NN':>10s}  {'F-PINN':>10s}  {'Improv':>8s}"
+            f"{'Vanilla':>10s}  {'F-NN':>10s}  {'PINN(J2)':>10s}  "
+            f"{'PINN(J2+D)':>12s}  {'J2 Imp':>8s}  {'J2+D Imp':>8s}"
         )
         print(
             f"  {'─' * 7}  {'─' * 22}  {'─' * 16}  "
-            f"{'─' * 10}  {'─' * 10}  {'─' * 10}  {'─' * 8}"
+            f"{'─' * 10}  {'─' * 10}  {'─' * 10}  "
+            f"{'─' * 12}  {'─' * 8}  {'─' * 8}"
         )
         for r in all_results:
             print(
@@ -453,18 +583,23 @@ def main():
                 f"{r['vanilla_test_rmse_km']:>8.1f}km  "
                 f"{r['fourier_nn_test_rmse_km']:>8.1f}km  "
                 f"{r['fourier_pinn_test_rmse_km']:>8.1f}km  "
-                f"{r['pinn_improvement_pct']:>+7.1f}%"
+                f"{r['j2drag_pinn_test_rmse_km']:>10.1f}km  "
+                f"{r['pinn_improvement_pct']:>+7.1f}%  "
+                f"{r['j2drag_improvement_pct']:>+7.1f}%"
             )
 
         # Aggregate statistics
         van_avg = np.mean([r["vanilla_test_rmse_km"] for r in all_results])
         nn_avg = np.mean([r["fourier_nn_test_rmse_km"] for r in all_results])
         pinn_avg = np.mean([r["fourier_pinn_test_rmse_km"] for r in all_results])
+        drag_avg = np.mean([r["j2drag_pinn_test_rmse_km"] for r in all_results])
         improv_avg = np.mean([r["pinn_improvement_pct"] for r in all_results])
+        drag_improv_avg = np.mean([r["j2drag_improvement_pct"] for r in all_results])
 
         print(f"\n  {'AVERAGE':>7s}  {'':22s}  {'':16s}  "
               f"{van_avg:>8.1f}km  {nn_avg:>8.1f}km  {pinn_avg:>8.1f}km  "
-              f"{improv_avg:>+7.1f}%")
+              f"{drag_avg:>10.1f}km  "
+              f"{improv_avg:>+7.1f}%  {drag_improv_avg:>+7.1f}%")
 
         # Save aggregate results
         aggregate_path = "data/real_results/summary.json"
@@ -476,7 +611,9 @@ def main():
                     "vanilla_test_rmse_km": round(float(van_avg), 2),
                     "fourier_nn_test_rmse_km": round(float(nn_avg), 2),
                     "fourier_pinn_test_rmse_km": round(float(pinn_avg), 2),
+                    "j2drag_pinn_test_rmse_km": round(float(drag_avg), 2),
                     "pinn_improvement_pct": round(float(improv_avg), 2),
+                    "j2drag_improvement_pct": round(float(drag_improv_avg), 2),
                 },
             }, f, indent=2)
         print(f"\n  Aggregate results saved -> {aggregate_path}")
