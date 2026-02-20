@@ -42,7 +42,7 @@ from satellite_catalog import get_catalog, get_by_norad_id
 
 TOTAL_EPOCHS   = 5000
 WARMUP_EPOCHS  = 1500    # data-only warmup for PINN
-N_FREQ         = 4       # Fourier frequencies (low to avoid k^2 blowup)
+N_FREQ         = 6       # Fourier frequencies
 HIDDEN         = 64      # hidden layer width
 LAYERS         = 3       # hidden layers
 LR_MAX         = 1e-3
@@ -50,7 +50,7 @@ LR_MIN         = 1e-5
 N_COL          = 400     # collocation points
 TRAIN_FRAC     = 0.20    # first 20% = ~1 orbit
 GRAD_CLIP      = 1.0
-LAMBDA_PHYS    = 0.01    # gentler than synthetic due to physics model mismatch
+LAMBDA_PHYS    = 0.005   # physics loss weight -- very gentle for SGP4 data
 
 
 # -- Architecture (identical to train_pinn_j2.py) -----------------------------
@@ -386,9 +386,12 @@ def train_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022, verbose=True)
     pos_train = torch.tensor(pos_norm_np[:n_train], dtype=torch.float64)
     t_all = torch.tensor(t_norm_np[:, None], dtype=torch.float64)
 
+    # Collocation points in TRAINING region only -- avoids physics model
+    # mismatch from fighting the true trajectory in the test region.
+    # The Fourier + secular encoding handles test-region extrapolation.
     t_col = torch.linspace(
         float(t_norm_np[0]) + 0.001,
-        float(t_norm_np[-1]),
+        float(t_norm_np[n_train - 1]),
         N_COL,
         dtype=torch.float64,
     ).unsqueeze(1).requires_grad_(True)
