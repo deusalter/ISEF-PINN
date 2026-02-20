@@ -2,7 +2,7 @@
 
 ## Abstract
 
-This project develops a Physics-Informed Neural Network (PINN) framework for propagating low-Earth-orbit (LEO) satellite trajectories by embedding gravitational dynamics directly into the neural network training loss via PyTorch automatic differentiation. A Fourier feature encoding layer provides the network with natural periodicity building blocks (sin/cos at orbital-frequency harmonics), enabling robust extrapolation of orbital dynamics. Unlike conventional data-driven networks that treat orbital mechanics as a black box, the PINN enforces the governing equations of motion at a dense set of collocation points spanning the full time domain -- including regions where labelled data are absent. On the two-body (Keplerian) test case, the Fourier-PINN achieves a **98.6% reduction in position RMSE** and a **93.4% reduction in Hamiltonian energy drift** relative to an identically sized vanilla MLP baseline. On the more challenging J2-perturbed test case (which includes secular orbital precession from Earth's oblateness), the Fourier-PINN achieves a **98.2% test RMSE reduction** when extrapolating 4 orbits beyond a single-orbit training window. To validate generalization beyond synthetic test cases, we train and evaluate the framework on **20 real LEO satellites** spanning 5 orbit types (ISS-like, Starlink constellation, sun-synchronous, low-inclination, and diverse) using SGP4-propagated TLE data from the NORAD catalog. Across all 20 satellites the Fourier-PINN achieves a **99.7% average RMSE reduction** over vanilla MLPs (paired t-test, p < 10^-21), demonstrating that physics-informed learning with periodic feature encoding produces fast, reliable orbital predictions for real-time conjunction screening.
+This project develops a Physics-Informed Neural Network (PINN) framework for propagating low-Earth-orbit (LEO) satellite trajectories by embedding gravitational dynamics directly into the neural network training loss via PyTorch automatic differentiation. A Fourier feature encoding layer provides the network with natural periodicity building blocks (sin/cos at orbital-frequency harmonics), enabling robust extrapolation of orbital dynamics. Unlike conventional data-driven networks that treat orbital mechanics as a black box, the PINN enforces the governing equations of motion at a dense set of collocation points spanning the full time domain -- including regions where labelled data are absent. On the two-body (Keplerian) test case, the Fourier-PINN achieves a **98.6% reduction in position RMSE** and a **93.4% reduction in Hamiltonian energy drift** relative to an identically sized vanilla MLP baseline. On the more challenging J2-perturbed test case (which includes secular orbital precession from Earth's oblateness), the Fourier-PINN achieves a **98.2% test RMSE reduction** when extrapolating 4 orbits beyond a single-orbit training window. To validate generalization beyond synthetic test cases, we train and evaluate the framework on **20 real LEO satellites** spanning 5 orbit types (ISS-like, Starlink constellation, sun-synchronous, low-inclination, and diverse) using SGP4-propagated TLE data from the NORAD catalog. Across all 20 satellites the Fourier-PINN achieves a **99.7% average RMSE reduction** over vanilla MLPs (paired t-test, p < 10^-21). We further extend the physics loss to include atmospheric drag via the Harris-Priester density model; a paired comparison across all 20 satellites shows that drag provides **no statistically significant improvement** over J2-only physics (p = 0.59) at LEO timescales of 5 orbital periods, confirming that J2 is the dominant perturbation for short-arc propagation. Together, these results demonstrate that physics-informed learning with periodic feature encoding produces fast, reliable orbital predictions for real-time conjunction screening.
 
 ---
 
@@ -63,30 +63,51 @@ To verify that the approach generalizes beyond synthetic test cases, we train an
 
 **Physics model mismatch is a feature, not a bug.** The PINN uses a J2-only physics loss, while the SGP4 training data includes atmospheric drag, solar radiation pressure, and third-body effects. The fact that PINN still achieves 99.7% improvement despite this model mismatch demonstrates that approximate physics constraints are sufficient for robust extrapolation -- the physics loss acts as a regularizer even when the model is imperfect.
 
-**Detailed results for all 20 satellites:**
+**Detailed results for all 20 satellites (4 models each):**
 
-| NORAD | Name | Alt (km) | Inc (deg) | Vanilla RMSE (km) | PINN RMSE (km) | Improvement |
-|---|---|---|---|---|---|---|
-| 44883 | CBERS 04A | 625 | 28.5 | 24,312 | 118 | 99.5% |
-| 57320 | TROPICS-01 | 548 | 29.7 | 21,839 | 116 | 99.5% |
-| 57321 | TROPICS-02 | 548 | 29.7 | 21,730 | 115 | 99.5% |
-| 25063 | ORBCOMM FM-5 | 782 | 25.0 | 26,982 | 124 | 99.5% |
-| 25544 | ISS (ZARYA) | 417 | 51.6 | 23,170 | 59 | 99.7% |
-| 48274 | TIANHE (CSS) | 388 | 41.5 | 19,629 | 83 | 99.6% |
-| 56227 | CYGNUS NG-19 | 417 | 51.6 | 23,238 | 59 | 99.7% |
-| 58536 | CREW DRAGON C212 | 417 | 51.6 | 23,082 | 59 | 99.7% |
-| 44713 | STARLINK-1007 | 547 | 53.1 | 21,755 | 56 | 99.7% |
-| 44714 | STARLINK-1008 | 547 | 53.1 | 21,564 | 56 | 99.7% |
-| 44715 | STARLINK-1009 | 547 | 53.1 | 22,608 | 56 | 99.8% |
-| 44716 | STARLINK-1010 | 547 | 53.1 | 21,593 | 56 | 99.7% |
-| 49260 | LANDSAT 9 | 703 | 98.2 | 25,516 | 77 | 99.7% |
-| 46984 | SENTINEL-6A | 802 | 66.0 | 23,854 | 58 | 99.8% |
-| 43013 | NOAA-20 (JPSS-1) | 827 | 98.7 | 24,695 | 75 | 99.7% |
-| 37849 | SUOMI NPP | 827 | 98.7 | 24,798 | 75 | 99.7% |
-| 20580 | HUBBLE (HST) | 539 | 28.5 | 23,771 | 119 | 99.5% |
-| 43476 | GRACE-FO 1 | 512 | 89.0 | 25,044 | 82 | 99.7% |
-| 43070 | IRIDIUM 106 | 778 | 86.4 | 25,249 | 79 | 99.7% |
-| 36508 | COSMOS 2251 DEB | 853 | 74.0 | 28,762 | 68 | 99.8% |
+| NORAD | Name | Alt (km) | Inc (deg) | Vanilla (km) | Fourier NN (km) | PINN J2 (km) | PINN J2+Drag (km) | Improvement |
+|---|---|---|---|---|---|---|---|---|
+| 44883 | CBERS 04A | 625 | 28.5 | 24,312 | 118 | 118 | 118 | 99.5% |
+| 57320 | TROPICS-01 | 548 | 29.7 | 21,839 | 116 | 116 | 116 | 99.5% |
+| 57321 | TROPICS-02 | 548 | 29.7 | 21,730 | 116 | 115 | 115 | 99.5% |
+| 25063 | ORBCOMM FM-5 | 782 | 25.0 | 26,982 | 125 | 124 | 124 | 99.5% |
+| 25544 | ISS (ZARYA) | 417 | 51.6 | 23,170 | 59 | 59 | 59 | 99.7% |
+| 48274 | TIANHE (CSS) | 388 | 41.5 | 19,629 | 83 | 83 | 83 | 99.6% |
+| 56227 | CYGNUS NG-19 | 417 | 51.6 | 23,238 | 59 | 59 | 59 | 99.8% |
+| 58536 | CREW DRAGON C212 | 417 | 51.6 | 23,082 | 59 | 59 | 59 | 99.7% |
+| 44713 | STARLINK-1007 | 547 | 53.1 | 21,755 | 57 | 56 | 56 | 99.7% |
+| 44714 | STARLINK-1008 | 547 | 53.1 | 21,564 | 57 | 56 | 56 | 99.7% |
+| 44715 | STARLINK-1009 | 547 | 53.1 | 22,608 | 57 | 56 | 56 | 99.8% |
+| 44716 | STARLINK-1010 | 547 | 53.1 | 21,593 | 57 | 56 | 56 | 99.7% |
+| 49260 | LANDSAT 9 | 703 | 98.2 | 25,516 | 78 | 77 | 77 | 99.7% |
+| 46984 | SENTINEL-6A | 802 | 66.0 | 23,854 | 58 | 58 | 58 | 99.8% |
+| 43013 | NOAA-20 (JPSS-1) | 827 | 98.7 | 24,695 | 76 | 75 | 75 | 99.7% |
+| 37849 | SUOMI NPP | 827 | 98.7 | 24,798 | 76 | 75 | 75 | 99.7% |
+| 20580 | HUBBLE (HST) | 539 | 28.5 | 23,771 | 119 | 119 | 119 | 99.5% |
+| 43476 | GRACE-FO 1 | 512 | 89.0 | 25,044 | 83 | 82 | 82 | 99.7% |
+| 43070 | IRIDIUM 106 | 778 | 86.4 | 25,249 | 79 | 79 | 79 | 99.7% |
+| 36508 | COSMOS 2251 DEB | 853 | 74.0 | 28,762 | 68 | 68 | 68 | 99.8% |
+
+### Atmospheric Drag Physics Loss (Harris-Priester Model)
+
+To investigate whether incorporating atmospheric drag improves propagation accuracy, we extend the J2 physics loss with a differentiable Harris-Priester atmospheric density model. The drag acceleration is computed as:
+
+```
+a_drag = -0.5 * (Cd*A/m) * rho(h) * |v_rel| * v_rel
+```
+
+where `rho(h)` is the Harris-Priester density at altitude `h` (log-linear interpolation across a 50-entry table from 100--1000 km), `v_rel` is the satellite velocity relative to the co-rotating atmosphere, and `Cd*A/m` is the per-satellite ballistic coefficient (ranging from 0.010 m^2/kg for Hubble to 0.040 m^2/kg for debris). The entire drag computation is implemented in PyTorch and is fully differentiable via autograd.
+
+**Result: Drag provides no statistically significant improvement over J2-only physics.**
+
+| Comparison | Mean diff (km) | t-statistic | p-value | Significant? |
+|---|---|---|---|---|
+| J2 PINN vs Vanilla | 23,580 | 49.87 | 1.3 x 10^-21 | Yes (p < 0.001) |
+| J2 PINN vs Fourier NN | 0.37 | 11.85 | 3.2 x 10^-10 | Yes (p < 0.001) |
+| J2+Drag PINN vs Fourier NN | 0.37 | 11.79 | 3.5 x 10^-10 | Yes (p < 0.001) |
+| **J2+Drag PINN vs J2 PINN** | **-0.01** | **-0.55** | **0.59** | **No (p >= 0.05)** |
+
+**Physical interpretation:** Over 5 orbital periods (~8 hours), atmospheric drag at LEO altitudes (388--853 km) produces accelerations of order 10^-10 km/s^2, which is negligible compared to the J2 perturbation (~10^-6 km/s^2). The drag effect only becomes significant over hundreds to thousands of orbits (weeks to months), which is far beyond the 5-orbit propagation window used here. This confirms that **J2 is the dominant perturbation for short-arc orbital propagation**, and validates the J2-only PINN as sufficient for real-time conjunction screening timescales.
 
 ---
 
@@ -117,8 +138,8 @@ To verify that the approach generalizes beyond synthetic test cases, we train an
                                                               |
                                                               v
                                                    Physics Residual Loss
-                                                   acc + pos/||pos||^3 = 0
-                                                   (on 1600 collocation pts
+                                                   acc + pos/||pos||^3 - a_J2 - a_drag = 0
+                                                   (on 400 collocation pts
                                                     spanning FULL time domain)
 ```
 
@@ -151,7 +172,8 @@ ISEF_PINN/
 |
 |-- src/
 |   |-- __init__.py
-|   `-- physics.py            # Physical constants, ODE right-hand sides, normalization, residuals
+|   |-- physics.py            # Physical constants, ODE right-hand sides, normalization, residuals
+|   `-- atmosphere.py         # Harris-Priester density model + drag acceleration (torch-differentiable)
 |
 |-- data/                     # Generated automatically; .npy arrays produced by the pipeline
 |   |-- orbital_data.npy              # Two-body ground truth  (2000, 7): [t, x, y, z, vx, vy, vz]
@@ -240,7 +262,7 @@ python3 evaluate.py
 # Step 6 -- Real satellite catalog validation (20 LEO satellites)
 python3 download_tle.py           # Download TLEs (uses fallbacks if no Space-Track credentials)
 python3 generate_real_data.py     # SGP4 propagation to dense trajectories
-python3 train_real_orbits.py      # Train 3 models per satellite (Vanilla, Fourier NN, Fourier PINN)
+python3 train_real_orbits.py      # Train 4 models per satellite (Vanilla, Fourier NN, J2 PINN, J2+Drag PINN)
 python3 analyze_catalog.py        # Statistical analysis + publication figures
 ```
 
@@ -261,7 +283,7 @@ python3 train_real_orbits.py --sat 25544   # ISS only (~90 seconds)
 | Evaluation and plotting | `evaluate.py` | < 60 seconds |
 | TLE download | `download_tle.py` | < 10 seconds |
 | SGP4 propagation | `generate_real_data.py` | < 30 seconds (20 satellites) |
-| Real catalog training | `train_real_orbits.py` | 25--35 minutes (20 satellites x 3 models) |
+| Real catalog training | `train_real_orbits.py` | 50--70 minutes (20 satellites x 4 models) |
 | Catalog analysis | `analyze_catalog.py` | < 30 seconds |
 
 Runtimes vary depending on hardware. A modern laptop CPU (Apple M-series or Intel Core i7/i9) will fall near the lower bound of each range.
@@ -381,6 +403,26 @@ factor  = -1.5 * J2 * MU * R_Earth^2 / r^5      (J2 = 1.08263e-3)
 
 In the J2 experiment the training split is reduced to 20% (one orbital period out of five), making the extrapolation challenge substantially harder: the network must predict 4 orbits into the future from a single orbit of training data. The Fourier encoding for J2 is **purely periodic** (no raw `t` input), ensuring the network output repeats with period 2*pi and preventing the tanh neurons from saturating when extrapolating 5x beyond the training window. The normalized J2 physics loss is derived analogously to the two-body case, with the dimensionless Earth radius `R_norm = R_Earth / r_ref` absorbing the physical constants.
 
+### Atmospheric Drag Extension (Harris-Priester Model)
+
+`src/atmosphere.py` implements a torch-differentiable atmospheric density model based on the Harris-Priester empirical model (Montenbruck & Gill, *Satellite Orbits*, Table 3.2). The model provides density as a function of altitude via log-linear interpolation across a 50-entry table spanning 100--1000 km, with adjustable solar activity blending between solar minimum and maximum conditions.
+
+The drag acceleration is:
+
+```
+a_drag = -0.5 * (Cd*A/m) * rho(h) * |v_rel| * v_rel * 1e3
+```
+
+where `v_rel = v_sat - omega_E x r` accounts for the co-rotating atmosphere (omega_E = 7.292e-5 rad/s), and the factor 1e3 converts from the mixed-unit product [km^2/(m*s^2)] to km/s^2. The ballistic coefficient `Cd*A/m` is specified per-satellite (see `satellite_catalog.py`).
+
+The full J2+Drag physics residual in normalized coordinates is:
+
+```
+residual = acc_norm + pos_norm/||pos_norm||^3 - a_J2_norm - a_drag_norm = 0
+```
+
+where `a_drag_norm = a_drag_kms2 * (t_ref^2 / r_ref)` converts the physical drag acceleration back to normalized units. The entire computation is differentiable via PyTorch autograd, allowing the drag physics to contribute to the PINN training loss.
+
 ---
 
 ## Output Figures
@@ -414,8 +456,8 @@ In the J2 experiment the training split is reduced to 20% (one orbital period ou
 
 | File | Contents |
 |---|---|
-| `catalog_boxplot.png` | Box plot comparing Vanilla MLP, Fourier NN, and Fourier PINN RMSE distributions across 20 satellites |
-| `catalog_scatter.png` | Scatter plot: PINN RMSE vs Vanilla RMSE for each satellite, color-coded by orbit type |
+| `catalog_boxplot.png` | Box plot comparing Vanilla MLP, Fourier NN, J2 PINN, and J2+Drag PINN RMSE distributions across 20 satellites |
+| `catalog_scatter.png` | Scatter plot: PINN RMSE vs Vanilla RMSE for each satellite, color-coded by orbit type (filled=J2, open=J2+Drag) |
 | `catalog_correlations.png` | Pearson correlations: PINN improvement % vs altitude, inclination, and eccentricity |
 | `catalog_summary.txt` | Full text summary table of all 20 satellite results |
 | `catalog_table.tex` | LaTeX-ready table for direct inclusion in papers/posters |
@@ -426,13 +468,15 @@ In the J2 experiment the training split is reduced to 20% (one orbital period ou
 
 1. **J2 perturbation at scale:** Extend the J2-PINN to longer propagation horizons (tens of orbits) and evaluate error growth rates across orbit types.
 
-2. **Drag and solar radiation pressure:** Incorporate non-conservative perturbations (atmospheric drag, solar radiation pressure) into the physics loss, which would require modelling time-varying atmospheric density.
+2. **Long-arc drag regime:** The Harris-Priester drag model shows no effect over 5 orbits (~8 hours). Extending the propagation window to hundreds of orbits (days to weeks) would enter the regime where drag causes measurable orbital decay, providing a stronger test of the J2+Drag physics loss.
 
-3. **Multi-object conjunction screening:** Deploy the trained PINN as a fast surrogate propagator within a Monte Carlo conjunction assessment framework, leveraging the ~3-10 ms inference latency for real-time screening of large satellite catalogs.
+3. **Solar radiation pressure:** Incorporate SRP into the physics loss for high area-to-mass ratio objects (e.g., GOES-type geostationary satellites or debris with large sail areas).
 
-4. **Adaptive collocation:** Implement adaptive collocation point placement that concentrates sampling where the physics residual is largest, improving training efficiency.
+4. **Multi-object conjunction screening:** Deploy the trained PINN as a fast surrogate propagator within a Monte Carlo conjunction assessment framework, leveraging the ~3-10 ms inference latency for real-time screening of large satellite catalogs.
 
-5. **Transfer learning:** Investigate whether a PINN trained on one satellite can be fine-tuned to a new satellite with fewer epochs, enabling rapid deployment across large constellations.
+5. **Adaptive collocation:** Implement adaptive collocation point placement that concentrates sampling where the physics residual is largest, improving training efficiency.
+
+6. **Transfer learning:** Investigate whether a PINN trained on one satellite can be fine-tuned to a new satellite with fewer epochs, enabling rapid deployment across large constellations.
 
 ---
 
