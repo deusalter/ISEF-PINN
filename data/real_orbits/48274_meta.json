@@ -1,0 +1,10 @@
+{
+  "norad_id": 48274,
+  "name": "TIANHE (CSS)",
+  "a_km": 6765.794080763019,
+  "inc_deg": 41.47,
+  "ecc": 0.0003,
+  "period_s": 5538.461538461539,
+  "n_orbits": 5,
+  "n_points": 5000
+}

@@ -1,0 +1,19 @@
+LEO Conjunction Screening -- PINN Surrogate Propagator
+========================================================
+
+Catalog A: 50 satellites @ 6778.1 km (400 km LEO)
+Catalog B: 50 satellites @ 6783.1 km  (405 km LEO)
+Time window: 4.63 h (1000 timesteps)
+
+Metric                                         Value
+--------------------------------------------------------
+PINN batch inference time                    57.0 ms
+ODE integration time                          231 ms
+PINN speed-up                                4.1 x
+Conjunction screening time                   62.6 ms
+Pairs screened                                 2,500
+Conjunctions flagged (< {CONJUNC_KM} km)                4
+Closest approach                             7.58 km
+PINN mean error vs ODE                      74.02 km
+PINN max  error vs ODE                     124.34 km
+========================================================

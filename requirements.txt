@@ -1,0 +1,8 @@
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.7
+torch>=2.0
+sgp4>=2.22
+spacetrack>=1.0
+python-dotenv>=1.0
+astropy>=5.0

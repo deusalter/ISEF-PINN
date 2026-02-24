@@ -1,0 +1,21 @@
+{
+  "norad_id": 25063,
+  "name": "ORBCOMM FM-5",
+  "orbit_type": "low-inclination",
+  "a_km": 7159.857537372019,
+  "inc_deg": 25.0,
+  "ecc": 0.001,
+  "period_s": 6029.309141660851,
+  "cd_a_over_m_init": 0.025,
+  "cd_a_over_m_learned": 0.02432,
+  "vanilla_test_rmse_km": 22468.61,
+  "fourier_nn_test_rmse_km": 7018.79,
+  "fourier_pinn_test_rmse_km": 5.59,
+  "j2drag_pinn_test_rmse_km": 4.86,
+  "vanilla_train_rmse_km": 18.83,
+  "fourier_nn_train_rmse_km": 10.26,
+  "fourier_pinn_train_rmse_km": 3.14,
+  "j2drag_pinn_train_rmse_km": 2.3,
+  "pinn_improvement_pct": 99.98,
+  "j2drag_improvement_pct": 99.98
+}

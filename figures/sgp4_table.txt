@@ -1,0 +1,19 @@
+J2-Perturbed Orbit -- SGP4 vs PINN vs Vanilla (Test RMSE)
+============================================================
+Model                      Test RMSE (km)
+------------------------------------------------------------
+Vanilla MLP                      18904.60
+Fourier PINN (ours)                333.99
+SGP4                               198.10
+============================================================
+
+Ground truth: DOP853 numerical integration of J2-perturbed ODE.
+SGP4 epoch:   2024-01-01 00:00:00 UTC, BSTAR = 1e-8 (near-zero drag).
+IC alignment: M0 = 26.6323 deg (binary-searched to match
+              simulation start; 3.251 km radial residual remains
+              due to Kozai mean vs osculating element difference).
+Orbit:        400 km circular, equatorial, 92.6 min period.
+
+Interpretation: SGP4 is more accurate than our PINN against the numerical
+integrator, as expected. Our PINN's key result is 98.2% improvement over
+the vanilla MLP baseline (18905 km → 334 km).

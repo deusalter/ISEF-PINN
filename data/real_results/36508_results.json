@@ -1,0 +1,20 @@
+{
+  "norad_id": 36508,
+  "name": "COSMOS 2251 DEB",
+  "orbit_type": "diverse",
+  "a_km": 7230.6728124863175,
+  "inc_deg": 74.04,
+  "ecc": 0.01,
+  "period_s": 6118.980169971672,
+  "cd_a_over_m": 0.04,
+  "vanilla_test_rmse_km": 28761.55,
+  "fourier_nn_test_rmse_km": 68.21,
+  "fourier_pinn_test_rmse_km": 67.63,
+  "j2drag_pinn_test_rmse_km": 67.63,
+  "vanilla_train_rmse_km": 57.52,
+  "fourier_nn_train_rmse_km": 9.32,
+  "fourier_pinn_train_rmse_km": 3.34,
+  "j2drag_pinn_train_rmse_km": 3.28,
+  "pinn_improvement_pct": 99.76,
+  "j2drag_improvement_pct": 99.76
+}

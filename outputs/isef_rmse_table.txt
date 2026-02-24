@@ -1,0 +1,21 @@
+ISEF PINN Orbital Propagation -- Results Summary
+======================================================================
+
+TWO-BODY ORBITAL PROPAGATION (3 orbits, 80/20 train/test split)
+----------------------------------------------------------------------
+Model                 Train RMSE (km)   Test RMSE (km)   Improvement
+--------------------  ---------------  ---------------  ------------
+Vanilla MLP                      8.91         10199.07      baseline
+Fourier NN                       6.27          1347.18         86.8%
+Fourier PINN                     3.60           144.63         98.6%
+
+J2-PERTURBED ORBITAL PROPAGATION (5 orbits, 20/80 train/test split)
+----------------------------------------------------------------------
+Model                 Train RMSE (km)   Test RMSE (km)   Improvement
+--------------------  ---------------  ---------------  ------------
+Vanilla MLP                     12.50         18904.60      baseline
+Fourier PINN                     8.50           335.90         98.2%
+
+Architecture: FourierPINN (N_FREQ=4, 64-hidden, 3-layer tanh, ~9000 params)
+Training: Curriculum warmup + cosine LR annealing
+Physics: Normalized two-body/J2 ODE residuals via PyTorch autograd
