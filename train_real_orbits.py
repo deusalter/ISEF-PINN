@@ -40,6 +40,7 @@ import numpy as np
 
 from src.physics import J2, J3, J4, R_EARTH, NormalizationParams
 from src.atmosphere import drag_acceleration_torch
+from src.models import FourierPINN, VanillaMLP, N_FREQ, HIDDEN, LAYERS
 from satellite_catalog import get_catalog, get_by_norad_id
 
 # -- Device -------------------------------------------------------------------
@@ -49,24 +50,33 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # -- Hyperparameters ----------------------------------------------------------
 
 TOTAL_EPOCHS   = 10000
-N_FREQ         = 8       # Fourier frequencies (captures short-period oscillations)
-HIDDEN         = 64      # hidden layer width
-LAYERS         = 3       # hidden layers
 LR_MAX         = 1e-3
 LR_MIN         = 1e-5
-N_COL          = 1000    # collocation points (increased for better physics coverage)
+SEC_LR_FACTOR  = 0.1     # secular head learns at 0.1 * LR_MAX (prevents overshoot)
+N_COL          = 2000    # collocation points (doubled for better physics coverage)
 TRAIN_FRAC     = 0.20    # first 20% = ~1 orbit
 GRAD_CLIP      = 1.0
 
-# 4-phase curriculum for real satellite data.
+# 4-phase curriculum for SGP4 data (10K epochs).
 # Uses full-domain collocation so physics guides test-region extrapolation.
 # Lambda ramps to 0.15 -- aggressive enough to constrain extrapolation but
 # moderate enough to tolerate small SGP4 vs J2+drag model mismatch.
-CURRICULUM = [
+CURRICULUM_SGP4 = [
     (2000,  0.00),   # Phase 1: data warmup only
     (5000,  0.01),   # Phase 2: gentle physics
     (8000,  0.05),   # Phase 3: moderate physics
     (10000, 0.15),   # Phase 4: full physics
+]
+
+# GMAT curriculum: 15K epochs with gentler physics ramp.
+# GMAT dynamics are richer (full gravity, drag, 3rd body, SRP) so the J2-only
+# physics loss should stay softer to avoid fighting unmodeled forces.
+GMAT_EPOCHS = 15000
+CURRICULUM_GMAT = [
+    (3000,  0.00),   # Phase 1: data warmup
+    (7000,  0.005),  # Phase 2: very gentle physics
+    (11000, 0.02),   # Phase 3: moderate physics
+    (15000, 0.05),   # Phase 4: full physics (capped at 0.05)
 ]
 
 
@@ -78,80 +88,40 @@ def get_lambda(ep, curriculum):
     return curriculum[-1][1]
 
 
-# -- Architecture (identical to train_pinn_j2.py) -----------------------------
+def make_adaptive_collocation(t_norm_np, n_col, device):
+    """Create adaptive collocation points concentrated near train/test boundary.
 
-class FourierPINN(nn.Module):
-    """Fourier-featured neural network with secular drift for orbital prediction.
-
-    Architecture:
-        pos(t) = periodic_net(Fourier_enc(t))  +  sec_head(Fourier_enc(t)) * t
-
-    The second term (secular drift head) captures slow, monotonic drift of
-    orbital elements (RAAN precession, argument-of-perigee precession) that
-    manifests in ECI coordinates as t-modulated Fourier oscillations.  A purely
-    periodic model cannot represent this and hits a ~56 km floor on real
-    inclined orbits; this addition resolves that floor.
-
-    The sec_head weights are zero-initialized so the model starts as a purely
-    periodic network and only grows secular terms as training demands them.
-    With the J2 physics loss active, the secular rate is guided toward the
-    physically correct J2-induced precession rate.
+    Distribution:
+      - 30% in training region (reinforce data fit)
+      - 50% near train/test boundary (critical extrapolation transition)
+      - 20% in far test region (physics guidance for long-range extrapolation)
     """
+    t_min = float(t_norm_np[0]) + 0.001
+    t_max = float(t_norm_np[-1])
+    n_train_pts = int(len(t_norm_np) * TRAIN_FRAC)
+    t_boundary = float(t_norm_np[n_train_pts - 1])
 
-    def __init__(self, n_freq=N_FREQ, hidden=HIDDEN, n_layers=LAYERS):
-        super().__init__()
-        self.n_freq = n_freq
-        input_dim = 2 * n_freq
-        self.register_buffer(
-            "freqs", torch.arange(1, n_freq + 1, dtype=torch.float64)
-        )
-        # Periodic backbone
-        layers = [nn.Linear(input_dim, hidden), nn.Tanh()]
-        for _ in range(n_layers - 1):
-            layers += [nn.Linear(hidden, hidden), nn.Tanh()]
-        layers.append(nn.Linear(hidden, 3))
-        self.net = nn.Sequential(*layers)
+    # Boundary zone: from 80% of training region to 40% into test region
+    t_boundary_lo = t_boundary - 0.2 * (t_boundary - t_min)
+    t_boundary_hi = t_boundary + 0.4 * (t_max - t_boundary)
 
-        # Secular drift head: learns t-modulated Fourier coefficients.
-        # Each Fourier harmonic gets its own drift rate per position component.
-        # Zero-initialized: starts as no drift, grows only when data requires it.
-        self.sec_head = nn.Linear(input_dim, 3, bias=False)
-        nn.init.zeros_(self.sec_head.weight)
+    n_train_col = int(n_col * 0.30)
+    n_boundary_col = int(n_col * 0.50)
+    n_far_col = n_col - n_train_col - n_boundary_col
 
-        for m in self.modules():
-            if isinstance(m, nn.Linear) and m is not self.sec_head:
-                nn.init.xavier_uniform_(m.weight)
-                nn.init.zeros_(m.bias)
+    parts = []
+    if n_train_col > 0:
+        parts.append(torch.linspace(t_min, t_boundary, n_train_col,
+                                     dtype=torch.float64, device=device))
+    if n_boundary_col > 0:
+        parts.append(torch.linspace(t_boundary_lo, t_boundary_hi, n_boundary_col,
+                                     dtype=torch.float64, device=device))
+    if n_far_col > 0:
+        parts.append(torch.linspace(t_boundary_hi, t_max, n_far_col,
+                                     dtype=torch.float64, device=device))
 
-    def encode(self, t):
-        wt = t * self.freqs
-        return torch.cat([torch.sin(wt), torch.cos(wt)], dim=1)
-
-    def forward(self, t):
-        enc = self.encode(t)                    # (N, 2*N_FREQ)
-        periodic = self.net(enc)                # (N, 3) -- purely periodic part
-        secular = self.sec_head(enc) * t        # (N, 3) -- t-modulated drift part
-        return periodic + secular
-
-
-class VanillaMLP(nn.Module):
-    """Plain tanh MLP baseline (no Fourier features)."""
-
-    def __init__(self, hidden=64, n_layers=LAYERS):
-        super().__init__()
-        layers = [nn.Linear(1, hidden), nn.Tanh()]
-        for _ in range(n_layers - 1):
-            layers += [nn.Linear(hidden, hidden), nn.Tanh()]
-        layers.append(nn.Linear(hidden, 3))
-        self.net = nn.Sequential(*layers)
-
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                nn.init.zeros_(m.bias)
-
-    def forward(self, t):
-        return self.net(t)
+    t_col = torch.cat(parts).unsqueeze(1).requires_grad_(True)
+    return t_col
 
 
 # -- Physics loss (J2 in normalized coords, per-satellite R_NORM) -------------
@@ -349,11 +319,25 @@ def compute_j2_drag_physics_loss(model, t_col, R_NORM, norm, MU_NORM, cd_a_over_
 
 # -- Training function (adapted from train_pinn_j2.py) ------------------------
 
+def _make_optimizer(model, lr, use_separate_lr=False):
+    """Create Adam optimizer, optionally with separate LR for secular head."""
+    if use_separate_lr and hasattr(model, 'sec_head'):
+        sec_params = list(model.sec_head.parameters())
+        sec_ids = {id(p) for p in sec_params}
+        main_params = [p for p in model.parameters() if id(p) not in sec_ids]
+        param_groups = [
+            {"params": main_params, "lr": lr},
+            {"params": sec_params, "lr": lr * SEC_LR_FACTOR},
+        ]
+        return torch.optim.Adam(param_groups)
+    return torch.optim.Adam(model.parameters(), lr=lr)
+
+
 def train_model(model, t_train, pos_train, t_col, t_all, pos_all_km,
                 n_train, total_epochs, R_NORM, norm,
                 use_physics=False, tag="Model",
-                physics_loss_fn=None):
-    """Train a model using the 4-phase CURRICULUM schedule.
+                physics_loss_fn=None, curriculum=None):
+    """Train a model using a phased curriculum schedule.
 
     Returns (best_test_rmse, best_train_rmse).
 
@@ -362,9 +346,15 @@ def train_model(model, t_train, pos_train, t_col, t_all, pos_all_km,
     physics_loss_fn : callable or None
         If provided, called as physics_loss_fn(model, t_col).
         Must be passed explicitly when use_physics=True; there is no default.
+    curriculum : list of (epoch, lambda) tuples or None
+        Physics weight schedule. Defaults to CURRICULUM_SGP4.
     """
+    if curriculum is None:
+        curriculum = CURRICULUM_SGP4
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR_MAX)
+    # Use separate LR for FourierPINN secular head
+    use_sep_lr = hasattr(model, 'sec_head')
+    optimizer = _make_optimizer(model, LR_MAX, use_separate_lr=use_sep_lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=total_epochs, eta_min=LR_MIN
     )
@@ -375,14 +365,14 @@ def train_model(model, t_train, pos_train, t_col, t_all, pos_all_km,
     best_state = None
 
     # Curriculum phase boundaries for optimizer refresh
-    phase_boundaries = {ep for ep, _ in CURRICULUM} if use_physics else set()
+    phase_boundaries = {ep for ep, _ in curriculum} if use_physics else set()
 
     model.train()
     for ep in range(1, total_epochs + 1):
 
         # Refresh Adam at each curriculum phase transition to reset stale momentum
         if use_physics and ep in phase_boundaries and ep > 1:
-            optimizer = torch.optim.Adam(model.parameters(), lr=LR_MAX * 0.5)
+            optimizer = _make_optimizer(model, LR_MAX * 0.5, use_separate_lr=use_sep_lr)
             remaining = total_epochs - ep
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, T_max=max(remaining, 1), eta_min=LR_MIN
@@ -395,7 +385,7 @@ def train_model(model, t_train, pos_train, t_col, t_all, pos_all_km,
         dl = mse(pred, pos_train)
 
         # Physics loss with curriculum lambda
-        lam = get_lambda(ep, CURRICULUM) if use_physics else 0.0
+        lam = get_lambda(ep, curriculum) if use_physics else 0.0
         if use_physics and lam > 0.0 and physics_loss_fn is not None:
             pl = physics_loss_fn(model, t_col)
             total = dl + lam * pl
@@ -443,7 +433,8 @@ def train_model(model, t_train, pos_train, t_col, t_all, pos_all_km,
 # -- Main ---------------------------------------------------------------------
 
 def train_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022, verbose=True,
-                    data_dir="data/real_orbits", results_dir="data/real_results"):
+                    data_dir="data/real_orbits", results_dir="data/real_results",
+                    data_source="sgp4"):
     """Train all four models for one satellite. Returns results dict or None."""
 
     data_path = f"{data_dir}/{norad_id}.npy"
@@ -498,18 +489,17 @@ def train_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022, verbose=True,
     pos_train = torch.tensor(pos_norm_np[:n_train], dtype=torch.float64).to(DEVICE)
     t_all = torch.tensor(t_norm_np[:, None], dtype=torch.float64).to(DEVICE)
 
-    # Collocation points over the FULL time domain (train + test).
-    # Enforcing physics in the test region is what allows the PINN to
-    # extrapolate more accurately than a purely data-driven model.
-    # J2+drag is a good approximation for SGP4 over 5 orbits (~7.7 hours):
-    # drag causes < 0.2 km altitude loss, lunar/solar < 0.01 km over this window.
-    t_col = torch.linspace(
-        float(t_norm_np[0]) + 0.001,
-        float(t_norm_np[-1]),
-        N_COL,
-        dtype=torch.float64,
-        device=DEVICE,
-    ).unsqueeze(1).requires_grad_(True)
+    # Select curriculum and epochs based on data source
+    if data_source == "gmat":
+        curriculum = CURRICULUM_GMAT
+        total_epochs = GMAT_EPOCHS
+    else:
+        curriculum = CURRICULUM_SGP4
+        total_epochs = TOTAL_EPOCHS
+
+    # Adaptive collocation: concentrated near train/test boundary for better
+    # extrapolation guidance. 30% train, 50% boundary, 20% far test region.
+    t_col = make_adaptive_collocation(t_norm_np, N_COL, DEVICE)
 
     # -- Train Vanilla MLP ----------------------------------------------------
     if verbose:
@@ -521,8 +511,9 @@ def train_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022, verbose=True,
     vanilla = VanillaMLP().double().to(DEVICE)
     van_test_rmse, van_train_rmse = train_model(
         vanilla, t_train, pos_train, t_col, t_all, pos_km,
-        n_train, TOTAL_EPOCHS, R_NORM, norm,
+        n_train, total_epochs, R_NORM, norm,
         use_physics=False, tag="VAN",
+        curriculum=curriculum,
     )
 
     # -- Train Fourier NN (data-only) -----------------------------------------
@@ -535,8 +526,9 @@ def train_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022, verbose=True,
     fourier_nn = FourierPINN().double().to(DEVICE)
     nn_test_rmse, nn_train_rmse = train_model(
         fourier_nn, t_train, pos_train, t_col, t_all, pos_km,
-        n_train, TOTAL_EPOCHS, R_NORM, norm,
+        n_train, total_epochs, R_NORM, norm,
         use_physics=False, tag="F-NN",
+        curriculum=curriculum,
     )
 
     # -- Train Fourier PINN (data + J2 physics) -------------------------------
@@ -550,9 +542,10 @@ def train_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022, verbose=True,
     fourier_pinn = FourierPINN().double().to(DEVICE)
     pinn_test_rmse, pinn_train_rmse = train_model(
         fourier_pinn, t_train, pos_train, t_col, t_all, pos_km,
-        n_train, TOTAL_EPOCHS, R_NORM, norm,
+        n_train, total_epochs, R_NORM, norm,
         use_physics=True, tag="F-PINN",
         physics_loss_fn=j2_loss_fn,
+        curriculum=curriculum,
     )
 
     # -- Train Fourier PINN (data + J2 + Drag physics, learnable Cd*A/m) -------
@@ -576,9 +569,10 @@ def train_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022, verbose=True,
     )
     drag_test_rmse, drag_train_rmse = train_model(
         fourier_pinn_drag, t_train, pos_train, t_col, t_all, pos_km,
-        n_train, TOTAL_EPOCHS, R_NORM, norm,
+        n_train, total_epochs, R_NORM, norm,
         use_physics=True, tag="J2+D",
         physics_loss_fn=j2drag_loss_fn,
+        curriculum=curriculum,
     )
     learned_cd = float(torch.exp(fourier_pinn_drag.log_cd_a_over_m).detach())
     if verbose:
@@ -672,10 +666,19 @@ def main():
     n_params = sum(p.numel() for p in _model_tmp.parameters())
     n_sec = _model_tmp.sec_head.weight.numel()
     del _model_tmp
-    print(f"\n  FourierPINN: N_FREQ={N_FREQ}, {HIDDEN}x{LAYERS} tanh + sec_head({n_sec}p), "
+
+    if args.data_source == "gmat":
+        curr = CURRICULUM_GMAT
+        epochs = GMAT_EPOCHS
+    else:
+        curr = CURRICULUM_SGP4
+        epochs = TOTAL_EPOCHS
+
+    print(f"\n  FourierPINN: N_FREQ={N_FREQ}, {HIDDEN}x{LAYERS} tanh+residual + sec_head({n_sec}p), "
           f"{n_params:,} total params")
-    print(f"  Collocation: {N_COL} points | 4-phase curriculum: {CURRICULUM}")
-    print(f"  Epochs: {TOTAL_EPOCHS} | empirical t_ref per satellite")
+    print(f"  Collocation: {N_COL} adaptive points | 4-phase curriculum: {curr}")
+    print(f"  Epochs: {epochs} | empirical t_ref per satellite")
+    print(f"  Secular head LR: {SEC_LR_FACTOR}x main LR")
     print(f"  Train fraction: {TRAIN_FRAC*100:.0f}%")
 
     os.makedirs(results_dir, exist_ok=True)
@@ -706,6 +709,7 @@ def main():
             cd_a_over_m=sat.cd_a_over_m,
             data_dir=data_dir,
             results_dir=results_dir,
+            data_source=args.data_source,
         )
 
         if result is not None:

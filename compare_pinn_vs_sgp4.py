@@ -46,6 +46,7 @@ import torch
 import torch.nn as nn
 
 from src.physics import MU, R_EARTH, J2, J3, J4, NormalizationParams
+from src.models import FourierPINN
 from satellite_catalog import get_catalog, get_by_norad_id
 from download_tle import load_tle
 from frame_conversion import teme_to_j2000_batch
@@ -58,23 +59,22 @@ from sgp4.api import Satrec
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ---------------------------------------------------------------------------
-# Hyperparameters (same as train_real_orbits.py)
+# Hyperparameters (matched from train_real_orbits.py)
 # ---------------------------------------------------------------------------
-TOTAL_EPOCHS = 10000
-N_FREQ = 8
-HIDDEN = 64
-LAYERS = 3
+TOTAL_EPOCHS = 15000     # GMAT curriculum uses 15K epochs
 LR_MAX = 1e-3
 LR_MIN = 1e-5
-N_COL = 1000
+SEC_LR_FACTOR = 0.1     # secular head learns at 0.1 * LR_MAX
+N_COL = 2000
 TRAIN_FRAC = 0.20
 GRAD_CLIP = 1.0
 
+# GMAT curriculum: gentler physics ramp (GMAT dynamics richer than J2+drag)
 CURRICULUM = [
-    (2000,  0.00),
-    (5000,  0.01),
-    (8000,  0.05),
-    (10000, 0.15),
+    (3000,  0.00),   # Phase 1: data warmup
+    (7000,  0.005),  # Phase 2: very gentle physics
+    (11000, 0.02),   # Phase 3: moderate physics
+    (15000, 0.05),   # Phase 4: full physics (capped at 0.05)
 ]
 
 
@@ -85,40 +85,45 @@ def get_lambda(ep, curriculum):
     return curriculum[-1][1]
 
 
-# ---------------------------------------------------------------------------
-# Model architecture (same as train_real_orbits.py)
-# ---------------------------------------------------------------------------
-class FourierPINN(nn.Module):
-    def __init__(self, n_freq=N_FREQ, hidden=HIDDEN, n_layers=LAYERS):
-        super().__init__()
-        self.n_freq = n_freq
-        input_dim = 2 * n_freq
-        self.register_buffer(
-            "freqs", torch.arange(1, n_freq + 1, dtype=torch.float64)
-        )
-        layers = [nn.Linear(input_dim, hidden), nn.Tanh()]
-        for _ in range(n_layers - 1):
-            layers += [nn.Linear(hidden, hidden), nn.Tanh()]
-        layers.append(nn.Linear(hidden, 3))
-        self.net = nn.Sequential(*layers)
+def _make_optimizer(model, lr):
+    """Create Adam optimizer with separate LR for secular head."""
+    if hasattr(model, 'sec_head'):
+        sec_params = list(model.sec_head.parameters())
+        sec_ids = {id(p) for p in sec_params}
+        main_params = [p for p in model.parameters() if id(p) not in sec_ids]
+        param_groups = [
+            {"params": main_params, "lr": lr},
+            {"params": sec_params, "lr": lr * SEC_LR_FACTOR},
+        ]
+        return torch.optim.Adam(param_groups)
+    return torch.optim.Adam(model.parameters(), lr=lr)
 
-        self.sec_head = nn.Linear(input_dim, 3, bias=False)
-        nn.init.zeros_(self.sec_head.weight)
 
-        for m in self.modules():
-            if isinstance(m, nn.Linear) and m is not self.sec_head:
-                nn.init.xavier_uniform_(m.weight)
-                nn.init.zeros_(m.bias)
+def make_adaptive_collocation(t_norm_np, n_col, n_train_pts, device):
+    """Create adaptive collocation points concentrated near train/test boundary."""
+    t_min = float(t_norm_np[0]) + 0.001
+    t_max = float(t_norm_np[-1])
+    t_boundary = float(t_norm_np[n_train_pts - 1])
 
-    def encode(self, t):
-        wt = t * self.freqs
-        return torch.cat([torch.sin(wt), torch.cos(wt)], dim=1)
+    t_boundary_lo = t_boundary - 0.2 * (t_boundary - t_min)
+    t_boundary_hi = t_boundary + 0.4 * (t_max - t_boundary)
 
-    def forward(self, t):
-        enc = self.encode(t)
-        periodic = self.net(enc)
-        secular = self.sec_head(enc) * t
-        return periodic + secular
+    n_train_col = int(n_col * 0.30)
+    n_boundary_col = int(n_col * 0.50)
+    n_far_col = n_col - n_train_col - n_boundary_col
+
+    parts = []
+    if n_train_col > 0:
+        parts.append(torch.linspace(t_min, t_boundary, n_train_col,
+                                     dtype=torch.float64, device=device))
+    if n_boundary_col > 0:
+        parts.append(torch.linspace(t_boundary_lo, t_boundary_hi, n_boundary_col,
+                                     dtype=torch.float64, device=device))
+    if n_far_col > 0:
+        parts.append(torch.linspace(t_boundary_hi, t_max, n_far_col,
+                                     dtype=torch.float64, device=device))
+
+    return torch.cat(parts).unsqueeze(1).requires_grad_(True)
 
 
 # ---------------------------------------------------------------------------
@@ -210,18 +215,16 @@ def train_pinn_on_gmat(data, a_km):
     pos_train = torch.tensor(pos_norm_np[:n_train], dtype=torch.float64).to(DEVICE)
     t_all = torch.tensor(t_norm_np[:, None], dtype=torch.float64).to(DEVICE)
 
-    t_col = torch.linspace(
-        float(t_norm_np[0]) + 0.001,
-        float(t_norm_np[-1]),
-        N_COL, dtype=torch.float64, device=DEVICE,
-    ).unsqueeze(1).requires_grad_(True)
+    # Adaptive collocation: concentrated near train/test boundary
+    t_col = make_adaptive_collocation(t_norm_np, N_COL, n_train, DEVICE)
 
     torch.manual_seed(42)
     model = FourierPINN().double().to(DEVICE)
 
     j2_loss_fn = lambda m, tc: compute_j2_physics_loss(m, tc, R_NORM, MU_NORM)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR_MAX)
+    # Separate LR for secular head
+    optimizer = _make_optimizer(model, LR_MAX)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=TOTAL_EPOCHS, eta_min=LR_MIN
     )
@@ -234,7 +237,7 @@ def train_pinn_on_gmat(data, a_km):
     model.train()
     for ep in range(1, TOTAL_EPOCHS + 1):
         if ep in phase_boundaries and ep > 1:
-            optimizer = torch.optim.Adam(model.parameters(), lr=LR_MAX * 0.5)
+            optimizer = _make_optimizer(model, LR_MAX * 0.5)
             remaining = TOTAL_EPOCHS - ep
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, T_max=max(remaining, 1), eta_min=LR_MIN
