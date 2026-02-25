@@ -2,14 +2,8 @@
 Shared neural network architectures for PINN orbital propagation.
 
 Provides:
-    - FourierPINN: Fourier-featured NN with secular drift + residual connections
+    - FourierPINN: Fourier-featured NN with secular drift head
     - VanillaMLP:  Plain tanh MLP baseline (no Fourier features)
-
-Architecture improvements over initial version:
-    - N_FREQ: 8 -> 16  (captures RAAN precession beat frequencies)
-    - HIDDEN: 64 -> 128 (avoids bottleneck with 32-feature Fourier encoding)
-    - Residual connections in hidden layers (helps gradient flow through
-      double-autograd physics loss computing 2nd derivatives)
 """
 
 import torch
@@ -18,28 +12,9 @@ import torch.nn as nn
 
 # -- Default architecture constants ------------------------------------------
 
-N_FREQ = 16      # Fourier frequencies (doubled from 8 to capture beat freqs)
-HIDDEN = 128     # Hidden layer width (doubled from 64, matches 2*N_FREQ=32 input)
+N_FREQ = 8       # Fourier frequencies
+HIDDEN = 64      # Hidden layer width
 LAYERS = 3       # Hidden layers
-
-
-# -- Residual block -----------------------------------------------------------
-
-class _ResidualTanhBlock(nn.Module):
-    """Linear -> Tanh with additive residual connection.
-
-    h_out = h_in + tanh(linear(h_in))
-
-    The residual skip helps gradient flow through the double-autograd
-    physics loss which computes 2nd derivatives through the full network.
-    """
-
-    def __init__(self, dim):
-        super().__init__()
-        self.linear = nn.Linear(dim, dim)
-
-    def forward(self, x):
-        return x + torch.tanh(self.linear(x))
 
 
 # -- FourierPINN --------------------------------------------------------------
@@ -49,11 +24,6 @@ class FourierPINN(nn.Module):
 
     Architecture:
         pos(t) = periodic_net(Fourier_enc(t))  +  sec_head(Fourier_enc(t)) * t
-
-    The periodic backbone uses residual connections in hidden layers:
-        - First layer: Linear(input_dim, hidden) -> Tanh  (no residual, dim change)
-        - Hidden layers: h = h + tanh(Linear(hidden, hidden))  (residual)
-        - Output layer: Linear(hidden, 3)
 
     The secular drift head captures slow monotonic drift of orbital elements
     (RAAN precession, argument-of-perigee precession) that manifests in ECI
@@ -70,16 +40,10 @@ class FourierPINN(nn.Module):
         self.register_buffer(
             "freqs", torch.arange(1, n_freq + 1, dtype=torch.float64)
         )
-
-        # Periodic backbone with residual connections
-        layers = []
-        # First layer: dimension change (no residual possible)
-        layers.append(nn.Linear(input_dim, hidden))
-        layers.append(nn.Tanh())
-        # Hidden layers: residual connections
+        # Periodic backbone
+        layers = [nn.Linear(input_dim, hidden), nn.Tanh()]
         for _ in range(n_layers - 1):
-            layers.append(_ResidualTanhBlock(hidden))
-        # Output layer
+            layers += [nn.Linear(hidden, hidden), nn.Tanh()]
         layers.append(nn.Linear(hidden, 3))
         self.net = nn.Sequential(*layers)
 

@@ -65,7 +65,7 @@ TOTAL_EPOCHS = 15000     # GMAT curriculum uses 15K epochs
 LR_MAX = 1e-3
 LR_MIN = 1e-5
 SEC_LR_FACTOR = 0.1     # secular head learns at 0.1 * LR_MAX
-N_COL = 2000
+N_COL = 1000
 TRAIN_FRAC = 0.20
 GRAD_CLIP = 1.0
 

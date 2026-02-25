@@ -53,7 +53,7 @@ TOTAL_EPOCHS   = 10000
 LR_MAX         = 1e-3
 LR_MIN         = 1e-5
 SEC_LR_FACTOR  = 0.1     # secular head learns at 0.1 * LR_MAX (prevents overshoot)
-N_COL          = 2000    # collocation points (doubled for better physics coverage)
+N_COL          = 1000    # collocation points
 TRAIN_FRAC     = 0.20    # first 20% = ~1 orbit
 GRAD_CLIP      = 1.0
 
