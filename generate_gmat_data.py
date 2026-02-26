@@ -32,6 +32,7 @@ import math
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -477,8 +478,10 @@ def process_satellite(
     print("  Running GMAT...", end="", flush=True)
     report_path = OUTPUT_DIR / f"{norad_id}{script_suffix}_gmat_report.txt"
 
+    gmat_t0 = time.perf_counter()
     if not run_gmat_script(script_path):
         return False
+    gmat_runtime_ms = (time.perf_counter() - gmat_t0) * 1e3
 
     # 6. Parse output
     if not report_path.exists():
@@ -524,6 +527,7 @@ def process_satellite(
         "frame": "EarthMJ2000Eq",
         "cd_a_over_m": cd_a_over_m,
         "raw_gmat_points": int(raw_data.shape[0]),
+        "gmat_runtime_ms": round(gmat_runtime_ms, 1),
     }
     meta_path = OUTPUT_DIR / f"{norad_id}{script_suffix}_meta.json" if script_suffix else OUTPUT_DIR / f"{norad_id}_meta.json"
     with open(meta_path, "w") as f:
