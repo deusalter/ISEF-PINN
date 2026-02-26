@@ -419,6 +419,86 @@ def physics_residual_j2(
 
 
 # ---------------------------------------------------------------------------
+# 11. gravity_j2j5_torch  (PyTorch, batched, physical units)
+# ---------------------------------------------------------------------------
+
+def gravity_j2j5_torch(pos_km: torch.Tensor) -> torch.Tensor:
+    """Batched J2-J5 gravitational acceleration (differentiable).
+
+    Computes two-body + J2 + J3 + J4 + J5 perturbation accelerations.
+
+    Parameters
+    ----------
+    pos_km : torch.Tensor, shape (N, 3)
+        Satellite positions in km (ECI frame).
+
+    Returns
+    -------
+    torch.Tensor, shape (N, 3)
+        Total gravitational acceleration in km/s².
+    """
+    x = pos_km[:, 0:1]   # (N, 1)
+    y = pos_km[:, 1:2]
+    z = pos_km[:, 2:3]
+
+    r = torch.norm(pos_km, dim=1, keepdim=True).clamp(min=1e-3)  # (N, 1)
+    r2 = r ** 2
+    r3 = r ** 3
+    r5 = r ** 5
+    r7 = r ** 7
+
+    # Two-body
+    a_tb = -MU * pos_km / r3  # (N, 3)
+
+    # J2
+    z2_r2 = (z / r) ** 2
+    j2_coeff = -1.5 * J2 * MU * R_EARTH ** 2 / r5
+    a_j2 = torch.cat([
+        j2_coeff * x * (1.0 - 5.0 * z2_r2),
+        j2_coeff * y * (1.0 - 5.0 * z2_r2),
+        j2_coeff * z * (3.0 - 5.0 * z2_r2),
+    ], dim=1)
+
+    # J3
+    j3_xy_fac = -2.5 * J3 * MU * R_EARTH ** 3 / r7
+    j3_xy_term = j3_xy_fac * (3.0 * z - 7.0 * z ** 3 / r2)
+    a_j3 = torch.cat([
+        j3_xy_term * x,
+        j3_xy_term * y,
+        (-0.5 * J3 * MU * R_EARTH ** 3 / r5) * (
+            30.0 * z ** 2 / r2 - 35.0 * z ** 4 / r2 ** 2 - 3.0
+        ),
+    ], dim=1)
+
+    # J4
+    z4_r4 = z ** 4 / r2 ** 2
+    j4_fac = J4 * MU * R_EARTH ** 4 / r7
+    j4_xy = 1.875 * j4_fac * (1.0 - 14.0 * z2_r2 + 21.0 * z4_r4)
+    a_j4 = torch.cat([
+        j4_xy * x,
+        j4_xy * y,
+        0.625 * j4_fac * z * (15.0 - 70.0 * z2_r2 + 63.0 * z4_r4),
+    ], dim=1)
+
+    # J5
+    r9 = r7 * r2
+    z6_r6 = z4_r4 * z2_r2
+    j5_fac = J5 * MU * R_EARTH ** 5
+    j5_xy = (21.0 / 8.0) * j5_fac * z / r9 * (
+        33.0 * z4_r4 - 30.0 * z2_r2 + 5.0
+    )
+    a_j5 = torch.cat([
+        j5_xy * x,
+        j5_xy * y,
+        (3.0 / 8.0) * j5_fac / r7 * (
+            231.0 * z6_r6 - 315.0 * z4_r4 + 105.0 * z2_r2 - 5.0
+        ),
+    ], dim=1)
+
+    return a_tb + a_j2 + a_j3 + a_j4 + a_j5
+
+
+# ---------------------------------------------------------------------------
 # Verification (main block)
 # ---------------------------------------------------------------------------
 

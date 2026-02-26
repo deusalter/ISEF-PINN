@@ -48,7 +48,7 @@ import torch
 import torch.nn as nn
 
 from src.physics import MU, R_EARTH, J2, J3, J4, J5, NormalizationParams
-from src.models import FourierPINN
+from src.models import FourierPINN, NeuralODE
 from src.atmosphere import drag_acceleration_torch
 from satellite_catalog import get_catalog, get_by_norad_id
 from download_tle import load_tle
@@ -279,13 +279,28 @@ def compute_j2_drag_physics_loss(model, t_col, R_NORM, norm, MU_NORM, cd_a_over_
 # ---------------------------------------------------------------------------
 # PINN training (simplified from train_real_orbits.py)
 # ---------------------------------------------------------------------------
-def train_pinn_on_gmat(data, a_km, long_arc=False, cd_a_over_m=0.022):
-    """Train a Fourier PINN on GMAT data. Returns predicted positions (km)."""
+def train_pinn_on_gmat(data, a_km):
+    """Train a Fourier PINN on GMAT data. Returns predicted positions (km).
+
+    Parameters
+    ----------
+    data : np.ndarray, shape (N, 7)
+        GMAT data: [t_seconds, x, y, z, vx, vy, vz].
+        Time column should start near 0 (rebased if using a late window).
+    a_km : float
+        Semi-major axis for normalization.
+
+    Returns
+    -------
+    pinn_pred_km : np.ndarray, shape (N, 3)
+    n_train : int
+    model, t_all, norm : for inference timing
+    """
     N = data.shape[0]
     t_raw = data[:, 0]
     pos_km = data[:, 1:4]
 
-    # Empirical t_ref
+    # Empirical t_ref from orbital angular velocity
     theta = np.unwrap(np.arctan2(data[:, 2], data[:, 1]))
     omega = np.polyfit(t_raw, theta, 1)[0]
     t_ref_emp = float(1.0 / omega)
@@ -299,32 +314,17 @@ def train_pinn_on_gmat(data, a_km, long_arc=False, cd_a_over_m=0.022):
 
     n_train = int(N * TRAIN_FRAC)
 
-    # For long-arc (50K pts), subsample training data to keep epochs fast
-    if long_arc and n_train > 2000:
-        idx_train = np.linspace(0, n_train - 1, 2000, dtype=int)
-        t_train = torch.tensor(t_norm_np[idx_train, None], dtype=torch.float64).to(DEVICE)
-        pos_train = torch.tensor(pos_norm_np[idx_train], dtype=torch.float64).to(DEVICE)
-    else:
-        t_train = torch.tensor(t_norm_np[:n_train, None], dtype=torch.float64).to(DEVICE)
-        pos_train = torch.tensor(pos_norm_np[:n_train], dtype=torch.float64).to(DEVICE)
+    t_train = torch.tensor(t_norm_np[:n_train, None], dtype=torch.float64).to(DEVICE)
+    pos_train = torch.tensor(pos_norm_np[:n_train], dtype=torch.float64).to(DEVICE)
     t_all = torch.tensor(t_norm_np[:, None], dtype=torch.float64).to(DEVICE)
 
-    # Adaptive collocation: more points for longer arcs
-    n_col = N_COL * 3 if long_arc else N_COL
-    t_col = make_adaptive_collocation(t_norm_np, n_col, n_train, DEVICE)
+    t_col = make_adaptive_collocation(t_norm_np, N_COL, n_train, DEVICE)
 
     torch.manual_seed(42)
     model = FourierPINN().double().to(DEVICE)
 
-    if long_arc:
-        # J2 + drag for 7-day arcs where drag matters
-        physics_loss_fn = lambda m, tc: compute_j2_drag_physics_loss(
-            m, tc, R_NORM, norm, MU_NORM, cd_a_over_m
-        )
-    else:
-        physics_loss_fn = lambda m, tc: compute_j2_physics_loss(m, tc, R_NORM, MU_NORM)
+    physics_loss_fn = lambda m, tc: compute_j2_physics_loss(m, tc, R_NORM, MU_NORM)
 
-    # Separate LR for secular head
     optimizer = _make_optimizer(model, LR_MAX)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=TOTAL_EPOCHS, eta_min=LR_MIN
@@ -386,6 +386,180 @@ def train_pinn_on_gmat(data, a_km, long_arc=False, cd_a_over_m=0.022):
 
 
 # ---------------------------------------------------------------------------
+# Neural ODE training (for --long-arc mode)
+# ---------------------------------------------------------------------------
+NODE_EPOCHS = 2000       # ~35 min per satellite on CPU
+NODE_LR = 3e-4           # Adam, cosine anneal to 1e-6
+NODE_LR_MIN = 1e-6
+NODE_DT = 60.0           # RK4 step size (seconds)
+NODE_N_SEGMENTS = 20     # multiple shooting segments in training window
+NODE_VEL_WEIGHT = 0.1    # velocity loss weight (position = 1.0)
+NODE_HIDDEN = 32
+NODE_LAYERS = 2
+
+
+def train_neural_ode_on_gmat(data, a_km, cd_a_over_m):
+    """Train a Neural ODE on GMAT data for long-arc propagation.
+
+    Uses multiple-shooting: splits training window into segments, integrates
+    each from a known GMAT state, and trains the NN correction to minimize
+    position + velocity error.
+
+    Parameters
+    ----------
+    data : np.ndarray, shape (N, 7)
+        GMAT data: [t_seconds, x, y, z, vx, vy, vz].
+    a_km : float
+        Semi-major axis for normalization references.
+    cd_a_over_m : float
+        Ballistic coefficient (unused by Neural ODE directly, but kept for API).
+
+    Returns
+    -------
+    ode_pred : np.ndarray, shape (N, 6)
+        Predicted [x, y, z, vx, vy, vz] in km and km/s.
+    n_train : int
+        Number of training points.
+    model : NeuralODE
+        Trained model.
+    norm : NormalizationParams
+        Normalization parameters used.
+    """
+    N = data.shape[0]
+    t_seconds = data[:, 0]
+    states_km = data[:, 1:7]  # (N, 6) [x, y, z, vx, vy, vz]
+
+    # Normalization references
+    from src.physics import circular_velocity
+    v_ref = circular_velocity(a_km)
+    norm = NormalizationParams(r_ref=a_km, v_ref=v_ref)
+
+    # Train/test split: 20% train, 80% test
+    n_train = int(N * TRAIN_FRAC)
+
+    # Build model
+    torch.manual_seed(42)
+    model = NeuralODE(
+        r_ref=a_km, v_ref=v_ref,
+        hidden=NODE_HIDDEN, n_layers=NODE_LAYERS,
+    ).double().to(DEVICE)
+
+    n_params = sum(p.numel() for p in model.correction.parameters())
+    print(f"    Neural ODE: {n_params} NN parameters, "
+          f"dt={NODE_DT}s, {NODE_N_SEGMENTS} segments")
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=NODE_LR)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=NODE_EPOCHS, eta_min=NODE_LR_MIN
+    )
+
+    # Prepare training segments (multiple shooting)
+    train_t = t_seconds[:n_train]
+    train_states = states_km[:n_train]  # (n_train, 6)
+    pts_per_seg = max(1, n_train // NODE_N_SEGMENTS)
+    seg_starts = list(range(0, n_train - pts_per_seg, pts_per_seg))
+    if not seg_starts:
+        seg_starts = [0]
+    n_segs = len(seg_starts)
+    print(f"    Training: {n_train} pts, {n_segs} segments, "
+          f"~{pts_per_seg} pts/seg")
+
+    # Pre-convert segment data to tensors
+    seg_data = []
+    for si in seg_starts:
+        se = min(si + pts_per_seg, n_train)
+        s0 = torch.tensor(train_states[si], dtype=torch.float64, device=DEVICE)
+        t_seg = torch.tensor(train_t[si:se], dtype=torch.float64, device=DEVICE)
+        truth_seg = torch.tensor(
+            train_states[si:se], dtype=torch.float64, device=DEVICE
+        )
+        seg_data.append((s0, t_seg, truth_seg))
+
+    best_state = None
+    best_loss = float("inf")
+
+    model.train()
+    for ep in range(1, NODE_EPOCHS + 1):
+        optimizer.zero_grad()
+        total_loss = torch.tensor(0.0, dtype=torch.float64, device=DEVICE)
+
+        for s0, t_seg, truth_seg in seg_data:
+            # Integrate from segment start to all segment times
+            pred = model.integrate_to_times(
+                s0, float(t_seg[0]), t_seg, dt=NODE_DT
+            )  # (seg_len, 6)
+
+            # Position loss (km)
+            pos_loss = torch.mean((pred[:, :3] - truth_seg[:, :3]) ** 2)
+            # Velocity loss (km/s)
+            vel_loss = torch.mean((pred[:, 3:] - truth_seg[:, 3:]) ** 2)
+
+            seg_loss = pos_loss + NODE_VEL_WEIGHT * vel_loss
+            total_loss = total_loss + seg_loss
+
+        total_loss = total_loss / n_segs
+        total_loss.backward()
+        nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
+        optimizer.step()
+        scheduler.step()
+
+        # Checkpoint best model
+        loss_val = total_loss.item()
+        if loss_val < best_loss:
+            best_loss = loss_val
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+
+        if ep % 200 == 0 or ep == NODE_EPOCHS:
+            lr_now = scheduler.get_last_lr()[0]
+            log_s = model.correction.log_scale.item()
+            print(f"    NODE ep={ep}/{NODE_EPOCHS}  loss={loss_val:.4e}  "
+                  f"best={best_loss:.4e}  lr={lr_now:.1e}  "
+                  f"log_scale={log_s:.2f}", flush=True)
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    # --- Test prediction: single-shot from training boundary ---
+    model.eval()
+    print(f"    Generating predictions (train + test)...")
+
+    with torch.no_grad():
+        # Train region: use segment-by-segment integration for accuracy
+        train_pred_list = []
+        for s0, t_seg, _ in seg_data:
+            pred_seg = model.integrate_to_times(
+                s0, float(t_seg[0]), t_seg, dt=NODE_DT
+            )
+            train_pred_list.append(pred_seg)
+        train_pred = torch.cat(train_pred_list, dim=0)  # (~n_train, 6)
+
+        # Test region: single-shot integration from last training state
+        t0_test = t_seconds[n_train - 1]
+        state0_test = torch.tensor(
+            states_km[n_train - 1], dtype=torch.float64, device=DEVICE
+        )
+        t_test = torch.tensor(
+            t_seconds[n_train:], dtype=torch.float64, device=DEVICE
+        )
+        test_pred = model.integrate_to_times(
+            state0_test, t0_test, t_test, dt=NODE_DT
+        )  # (N - n_train, 6)
+
+    # Combine train + test predictions
+    all_pred = torch.cat([train_pred, test_pred], dim=0)
+    ode_pred = all_pred.cpu().numpy()
+
+    # Pad if segment-based train prediction has fewer points than n_train
+    if ode_pred.shape[0] < N:
+        pad = np.tile(ode_pred[-1:], (N - ode_pred.shape[0], 1))
+        ode_pred = np.concatenate([ode_pred, pad], axis=0)
+    # Trim if we have excess from segment boundaries
+    ode_pred = ode_pred[:N]
+
+    return ode_pred, n_train, model, norm
+
+
+# ---------------------------------------------------------------------------
 # SGP4 propagation in J2000
 # ---------------------------------------------------------------------------
 def propagate_sgp4_j2000(line1, line2, t_seconds, epoch_dt):
@@ -437,7 +611,16 @@ def propagate_sgp4_j2000(line1, line2, t_seconds, epoch_dt):
 # ---------------------------------------------------------------------------
 def compare_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022,
                       long_arc=False):
-    """Run PINN vs SGP4 comparison for one satellite against GMAT truth.
+    """Run PINN/NeuralODE vs SGP4 comparison for one satellite against GMAT truth.
+
+    For long_arc mode, uses Neural ODE:
+      - Load full 7-day GMAT data (no windowing)
+      - Train Neural ODE on first 20% (multiple shooting with J2-J5 + learned corrections)
+      - SGP4 propagates from TLE epoch
+      - Compare both on the remaining 80% test window
+    This is a fair comparison: both methods evaluated on the same test window.
+
+    For 5-orbit mode, uses FourierPINN (unchanged).
 
     Returns
     -------
@@ -456,15 +639,26 @@ def compare_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022,
         return None
 
     # Load GMAT ground truth
-    gmat_data = np.load(data_path)  # (5000, 7)
+    gmat_data_full = np.load(data_path)
     with open(meta_path) as f:
         meta = json.load(f)
 
     a_km = meta["a_km"]
-    t_seconds = gmat_data[:, 0]
-    gmat_pos_km = gmat_data[:, 1:4]  # J2000 positions
 
-    print(f"  GMAT data: {gmat_data.shape[0]} pts, span={t_seconds[-1]/3600:.1f}h")
+    if long_arc:
+        # Use ALL 7-day data — no late-window trick
+        gmat_data = gmat_data_full
+        t_seconds = gmat_data[:, 0]
+        t_seconds_orig = t_seconds
+        gmat_pos_km = gmat_data[:, 1:4]
+        print(f"  7-day data: {gmat_data.shape[0]} pts, "
+              f"span={t_seconds[-1]/3600:.1f}h ({t_seconds[-1]/86400:.1f} days)")
+    else:
+        gmat_data = gmat_data_full
+        t_seconds = gmat_data[:, 0]
+        t_seconds_orig = t_seconds  # same as t_seconds for 5-orbit
+        gmat_pos_km = gmat_data[:, 1:4]
+        print(f"  GMAT data: {gmat_data.shape[0]} pts, span={t_seconds[-1]/3600:.1f}h")
 
     # Load TLE for SGP4 propagation
     tle_result = load_tle(norad_id)
@@ -478,18 +672,29 @@ def compare_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022,
     year_2d = int(epoch_str[:2])
     day_frac = float(epoch_str[2:])
     year = 2000 + year_2d if year_2d < 57 else 1900 + year_2d
-    from datetime import timedelta
     epoch_dt = datetime(year, 1, 1) + timedelta(days=day_frac - 1.0)
 
-    # 1. Train PINN on GMAT data
-    print(f"  Training PINN on first {TRAIN_FRAC*100:.0f}% of GMAT data...")
-    pinn_pred_km, n_train, model, t_all_tensor, norm = train_pinn_on_gmat(
-        gmat_data, a_km, long_arc=long_arc, cd_a_over_m=cd_a_over_m,
-    )
+    if long_arc:
+        # Train Neural ODE on full 7-day data
+        print(f"  Training Neural ODE on first {TRAIN_FRAC*100:.0f}% of data...")
+        ode_pred, n_train, model, norm = train_neural_ode_on_gmat(
+            gmat_data, a_km, cd_a_over_m
+        )
+        pinn_pred_km = ode_pred[:, :3]
+        # For inference timing, we need a tensor of all times
+        t_all_tensor = torch.tensor(
+            t_seconds[:, None], dtype=torch.float64, device=DEVICE
+        )
+    else:
+        # Train FourierPINN (5-orbit mode, unchanged)
+        print(f"  Training PINN on first {TRAIN_FRAC*100:.0f}% of window data...")
+        pinn_pred_km, n_train, model, t_all_tensor, norm = train_pinn_on_gmat(
+            gmat_data, a_km,
+        )
 
-    # 2. Propagate SGP4 from same epoch
+    # 2. Propagate SGP4 from TLE epoch at the ORIGINAL times
     print(f"  Propagating SGP4...")
-    sgp4_pos_km = propagate_sgp4_j2000(line1, line2, t_seconds, epoch_dt)
+    sgp4_pos_km = propagate_sgp4_j2000(line1, line2, t_seconds_orig, epoch_dt)
 
     # 3. Compute errors against GMAT truth (test region only)
     pinn_err = np.linalg.norm(pinn_pred_km - gmat_pos_km, axis=1)
@@ -511,18 +716,44 @@ def compare_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022,
     sgp4_max_err = float(np.max(sgp4_err[n_train:]))
 
     # --- Inference Time ---
-    # PINN: time a forward pass on the full dataset
     model.eval()
     n_timing_runs = 10
-    with torch.no_grad():
-        _ = model(t_all_tensor)  # warm-up
-    pinn_times = []
-    for _ in range(n_timing_runs):
-        t0 = time.perf_counter()
+
+    if long_arc:
+        # Neural ODE: time a test-region integration
+        state0_timing = torch.tensor(
+            gmat_data[n_train - 1, 1:7], dtype=torch.float64, device=DEVICE
+        )
+        t0_timing = float(t_seconds[n_train - 1])
+        # Use a subset of test points for timing (full integration is slow)
+        t_timing_sub = torch.tensor(
+            t_seconds[n_train:min(n_train + 500, len(t_seconds))],
+            dtype=torch.float64, device=DEVICE
+        )
         with torch.no_grad():
-            _ = model(t_all_tensor)
-        pinn_times.append((time.perf_counter() - t0) * 1e3)
-    pinn_inference_ms = float(np.median(pinn_times))
+            _ = model.integrate_to_times(state0_timing, t0_timing,
+                                         t_timing_sub, dt=NODE_DT)
+        pinn_times = []
+        for _ in range(min(n_timing_runs, 3)):  # fewer runs (integration is slow)
+            t0 = time.perf_counter()
+            with torch.no_grad():
+                _ = model.integrate_to_times(state0_timing, t0_timing,
+                                             t_timing_sub, dt=NODE_DT)
+            pinn_times.append((time.perf_counter() - t0) * 1e3)
+        # Scale to full test region
+        scale = len(t_seconds[n_train:]) / len(t_timing_sub)
+        pinn_inference_ms = float(np.median(pinn_times) * scale)
+    else:
+        # FourierPINN: time a forward pass on the full dataset
+        with torch.no_grad():
+            _ = model(t_all_tensor)  # warm-up
+        pinn_times = []
+        for _ in range(n_timing_runs):
+            t0 = time.perf_counter()
+            with torch.no_grad():
+                _ = model(t_all_tensor)
+            pinn_times.append((time.perf_counter() - t0) * 1e3)
+        pinn_inference_ms = float(np.median(pinn_times))
 
     # SGP4: time propagation of all points
     sat_sgp4 = Satrec.twoline2rv(line1, line2)
@@ -559,13 +790,14 @@ def compare_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022,
     sgp4_energy_drift = _energy_drift(sgp4_pos_km)
     gmat_energy_drift = _energy_drift(gmat_pos_km)
 
-    print(f"  PINN test RMSE:  {pinn_test_rmse:.2f} km")
+    method = "NODE" if long_arc else "PINN"
+    print(f"  {method} test RMSE:  {pinn_test_rmse:.2f} km")
     print(f"  SGP4 test RMSE:  {sgp4_test_rmse:.2f} km")
-    print(f"  PINN max error:  {pinn_max_err:.2f} km")
+    print(f"  {method} max error:  {pinn_max_err:.2f} km")
     print(f"  SGP4 max error:  {sgp4_max_err:.2f} km")
-    print(f"  PINN inference:  {pinn_inference_ms:.2f} ms")
+    print(f"  {method} inference:  {pinn_inference_ms:.2f} ms")
     print(f"  SGP4 inference:  {sgp4_inference_ms:.2f} ms")
-    print(f"  Energy drift  PINN={pinn_energy_drift:.2e}  "
+    print(f"  Energy drift  {method}={pinn_energy_drift:.2e}  "
           f"SGP4={sgp4_energy_drift:.2e}  GMAT={gmat_energy_drift:.2e}")
 
     improvement = (sgp4_test_rmse - pinn_test_rmse) / sgp4_test_rmse * 100 \
@@ -712,7 +944,7 @@ def main():
     else:
         satellites = get_catalog()
 
-    arc_label = "7-day" if args.long_arc else "5-orbit"
+    arc_label = "7-day (Neural ODE)" if args.long_arc else "5-orbit"
     print(f"  Satellites: {len(satellites)}")
     print(f"  Data: {arc_label} GMAT trajectories")
     print(f"  Train fraction: {TRAIN_FRAC*100:.0f}%")
