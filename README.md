@@ -360,6 +360,16 @@ A common pitfall in ML-for-astrodynamics research is training a model on data fr
 
 GMAT's force model (20x20 gravity, MSISE-90 drag, SRP, Sun/Moon) is orders of magnitude more accurate than SGP4's simplified analytical model, making it a valid independent reference.
 
+### Limitations and Caveats
+
+1. **Information asymmetry.** The PINN trains on GMAT trajectories while SGP4 uses only a TLE-derived state — so the PINN has access to richer dynamics. This is deliberate: an operational PINN *would* be trained on the best available ephemeris, whereas SGP4 is constrained by its analytical theory. The comparison reflects realistic deployment, not a controlled ablation.
+
+2. **What a fully symmetric test would require.** To eliminate the information advantage entirely, one would fit a same-complexity analytical model (e.g., Brouwer mean elements) on the identical GMAT training arc and compare extrapolation error head-to-head. This is left as future work.
+
+3. **MC Dropout uncertainty is illustrative.** The PINN was trained without dropout, so applying dropout at inference provides only an approximate posterior. The resulting covariance ellipsoids and collision probabilities demonstrate the UQ *pipeline* but should not be treated as calibrated uncertainty estimates. A production system would retrain with dropout enabled and validate coverage empirically.
+
+4. **Single architecture and seed.** All results use one Fourier-PINN architecture (8 frequencies, 64-wide, 3 hidden layers) with one random seed. Variance across seeds and sensitivity to hyperparameters have not been characterized.
+
 ### The Two-Body Orbital Mechanics Problem
 
 A satellite in low Earth orbit obeys Newton's gravitational law:
