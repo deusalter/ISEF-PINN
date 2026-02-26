@@ -37,6 +37,10 @@ J4: float = -1.61990e-6
 """Earth even-harmonic (J4) coefficient  [dimensionless].
    Causes additional oblateness effects.  About 0.15% of J2."""
 
+J5: float = -2.27271e-7
+"""Earth odd-harmonic (J5) coefficient  [dimensionless].
+   Higher-order north-south asymmetry.  About 0.02% of J2."""
+
 LEO_ALTITUDE: float = 400.0
 """Reference LEO altitude above the equator  [km]."""
 

@@ -38,7 +38,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from src.physics import J2, J3, J4, R_EARTH, NormalizationParams
+from src.physics import J2, J3, J4, J5, R_EARTH, NormalizationParams
 from src.atmosphere import drag_acceleration_torch
 from src.models import FourierPINN, VanillaMLP, N_FREQ, HIDDEN, LAYERS
 from satellite_catalog import get_catalog, get_by_norad_id
@@ -127,11 +127,10 @@ def make_adaptive_collocation(t_norm_np, n_col, device):
 # -- Physics loss (J2 in normalized coords, per-satellite R_NORM) -------------
 
 def compute_j2_physics_loss(model, t_col, R_NORM, MU_NORM=1.0):
-    """J2+J3 gravity physics residual in normalized coordinates.
+    """J2+J3+J4+J5 gravity physics residual in normalized coordinates.
 
-    SGP4 includes J2 (dominant), J3 (odd harmonic, ~0.23% of J2), and J4
-    (even harmonic, ~0.15% of J2).  Including J3 improves accuracy for
-    inclined orbits where z != 0.  J4 is added as a small correction.
+    Includes J2 (dominant oblateness), J3 (odd, ~0.23% of J2), J4 (even,
+    ~0.15% of J2), and J5 (odd, ~0.02% of J2) zonal harmonics.
     All in normalized coordinates: pos_norm = pos_km / r_ref, t_norm = t_s / t_ref.
     """
     pos = model(t_col)
@@ -196,17 +195,32 @@ def compute_j2_physics_loss(model, t_col, R_NORM, MU_NORM=1.0):
     # -- J4 perturbation (even harmonic, ~0.15% of J2) --
     # a_J4_x = (15/8)*J4*mu*R_E^4/r^7 * x*(1 - 14z^2/r^2 + 21z^4/r^4)
     # a_J4_y = similar
-    # a_J4_z = (5/8)*J4*mu*R_E^4/r^7 * z*(9 - 70z^2/r^2 + 63z^4/r^4)
+    # a_J4_z = (5/8)*J4*mu*R_E^4/r^7 * z*(15 - 70z^2/r^2 + 63z^4/r^4)
     j4_fac = J4 * MU_NORM * (R_NORM ** 4) / r7
     z4_r4 = z_n ** 4 / r2 ** 2
     j4_xy = 1.875 * j4_fac * (1.0 - 14.0 * z2_r2 + 21.0 * z4_r4)
     a_j4_x = j4_xy * x_n
     a_j4_y = j4_xy * y_n
-    a_j4_z = 0.625 * j4_fac * z_n * (9.0 - 70.0 * z2_r2 + 63.0 * z4_r4)
+    a_j4_z = 0.625 * j4_fac * z_n * (15.0 - 70.0 * z2_r2 + 63.0 * z4_r4)
     a_j4 = torch.cat([a_j4_x, a_j4_y, a_j4_z], dim=1)
 
-    # Residual: acc + gravity - a_J2 - a_J3 - a_J4 = 0
-    residual = acc + gravity - a_j2 - a_j3 - a_j4
+    # -- J5 perturbation (odd harmonic, ~0.02% of J2) --
+    # Derived from potential: U_J5 = -(mu*J5*R_E^5/8r^6) * P5(z/r)
+    # P5(u) = (63u^5 - 70u^3 + 15u)/8
+    # a_J5_x = (21/8)*J5*mu*R_E^5 * x*z/r^9 * (33u^4 - 30u^2 + 5)
+    # a_J5_y = similar
+    # a_J5_z = (3/8)*J5*mu*R_E^5/r^7 * (231u^6 - 315u^4 + 105u^2 - 5)
+    r9 = r7 * r2
+    z6_r6 = z4_r4 * z2_r2
+    j5_fac = J5 * MU_NORM * (R_NORM ** 5)
+    j5_xy = (21.0 / 8.0) * j5_fac * z_n / r9 * (33.0 * z4_r4 - 30.0 * z2_r2 + 5.0)
+    a_j5_x = j5_xy * x_n
+    a_j5_y = j5_xy * y_n
+    a_j5_z = (3.0 / 8.0) * j5_fac / r7 * (231.0 * z6_r6 - 315.0 * z4_r4 + 105.0 * z2_r2 - 5.0)
+    a_j5 = torch.cat([a_j5_x, a_j5_y, a_j5_z], dim=1)
+
+    # Residual: acc + gravity - a_J2 - a_J3 - a_J4 - a_J5 = 0
+    residual = acc + gravity - a_j2 - a_j3 - a_j4 - a_j5
 
     return torch.mean(residual ** 2)
 
@@ -293,8 +307,18 @@ def compute_j2_drag_physics_loss(model, t_col, R_NORM, norm, MU_NORM, cd_a_over_
     j4_xy = 1.875 * j4_fac * (1.0 - 14.0 * z2_r2 + 21.0 * z4_r4)
     a_j4_x = j4_xy * x_n
     a_j4_y = j4_xy * y_n
-    a_j4_z = 0.625 * j4_fac * z_n * (9.0 - 70.0 * z2_r2 + 63.0 * z4_r4)
+    a_j4_z = 0.625 * j4_fac * z_n * (15.0 - 70.0 * z2_r2 + 63.0 * z4_r4)
     a_j4 = torch.cat([a_j4_x, a_j4_y, a_j4_z], dim=1)
+
+    # -- J5 perturbation (odd harmonic, ~0.02% of J2) --
+    r9 = r7 * r2
+    z6_r6 = z4_r4 * z2_r2
+    j5_fac = J5 * MU_NORM * (R_NORM ** 5)
+    j5_xy = (21.0 / 8.0) * j5_fac * z_n / r9 * (33.0 * z4_r4 - 30.0 * z2_r2 + 5.0)
+    a_j5_x = j5_xy * x_n
+    a_j5_y = j5_xy * y_n
+    a_j5_z = (3.0 / 8.0) * j5_fac / r7 * (231.0 * z6_r6 - 315.0 * z4_r4 + 105.0 * z2_r2 - 5.0)
+    a_j5 = torch.cat([a_j5_x, a_j5_y, a_j5_z], dim=1)
 
     # Atmospheric drag (convert to physical units, call drag model, renormalize)
     # pos_norm -> pos_km
@@ -311,8 +335,8 @@ def compute_j2_drag_physics_loss(model, t_col, R_NORM, norm, MU_NORM, cd_a_over_
     # a_norm = a_physical * (t_ref^2 / r_ref)
     a_drag_normalized = a_drag_kms2 * (norm.t_ref ** 2 / norm.r_ref)
 
-    # Full residual: acc + gravity - a_j2 - a_j3 - a_j4 - a_drag = 0
-    residual = acc + gravity - a_j2 - a_j3 - a_j4 - a_drag_normalized
+    # Full residual: acc + gravity - a_j2 - a_j3 - a_j4 - a_j5 - a_drag = 0
+    residual = acc + gravity - a_j2 - a_j3 - a_j4 - a_j5 - a_drag_normalized
 
     return torch.mean(residual ** 2)
 

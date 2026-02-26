@@ -45,7 +45,7 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 import torch
 import torch.nn as nn
 
-from src.physics import MU, R_EARTH, J2, J3, J4, NormalizationParams
+from src.physics import MU, R_EARTH, J2, J3, J4, J5, NormalizationParams
 from src.models import FourierPINN
 from satellite_catalog import get_catalog, get_by_norad_id
 from download_tle import load_tle
@@ -181,10 +181,21 @@ def compute_j2_physics_loss(model, t_col, R_NORM, MU_NORM=1.0):
     a_j4 = torch.cat([
         j4_xy * x_n,
         j4_xy * y_n,
-        0.625 * j4_fac * z_n * (9.0 - 70.0 * z2_r2 + 63.0 * z4_r4),
+        0.625 * j4_fac * z_n * (15.0 - 70.0 * z2_r2 + 63.0 * z4_r4),
     ], dim=1)
 
-    residual = acc + gravity - a_j2 - a_j3 - a_j4
+    # -- J5 perturbation (odd harmonic, ~0.02% of J2) --
+    r9 = r7 * r2
+    z6_r6 = z4_r4 * z2_r2
+    j5_fac = J5 * MU_NORM * (R_NORM ** 5)
+    j5_xy = (21.0 / 8.0) * j5_fac * z_n / r9 * (33.0 * z4_r4 - 30.0 * z2_r2 + 5.0)
+    a_j5 = torch.cat([
+        j5_xy * x_n,
+        j5_xy * y_n,
+        (3.0 / 8.0) * j5_fac / r7 * (231.0 * z6_r6 - 315.0 * z4_r4 + 105.0 * z2_r2 - 5.0),
+    ], dim=1)
+
+    residual = acc + gravity - a_j2 - a_j3 - a_j4 - a_j5
     return torch.mean(residual ** 2)
 
 

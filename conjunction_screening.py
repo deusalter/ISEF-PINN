@@ -14,8 +14,9 @@ other and undergo periodic close approaches.
 
 Key demonstration:
   - Batch-propagate ALL satellites in a single PINN forward pass
-  - Screen ALL pairs for minimum separation < THRESHOLD in sub-second time
-  - Compare timing against running N individual scipy ODE integrations
+  - KD-tree spatial indexing for O(N log N) conjunction screening
+  - Compare KD-tree vs brute-force O(N²) screening with scalability benchmark
+  - Compare PINN propagation timing against N individual scipy ODE integrations
 
 Outputs
 -------
@@ -34,6 +35,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
 from scipy.integrate import solve_ivp
+from scipy.spatial import cKDTree
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -60,7 +62,7 @@ print("Loading PINN model...")
 norm_A = NormalizationParams(r_ref=R_ORBIT)
 model  = FourierPINN().double()
 sd     = torch.load("models/pinn_j2.pt", map_location="cpu", weights_only=True)
-model.load_state_dict(sd)
+model.load_state_dict(sd, strict=False)   # sec_head may be absent in older checkpoints (zero-init default)
 model.eval()
 
 # ── Orbital parameters ────────────────────────────────────────────────────────
@@ -149,23 +151,73 @@ print(f"  Mean error: {mean_err:.2f} km")
 print(f"  Max  error: {max_err:.2f} km")
 
 # ── Conjunction screening ─────────────────────────────────────────────────────
-# Screen all A-B pairs for minimum separation < threshold at any timestep.
-print(f"\nScreening {N_A * N_B} A-B pairs for conjunctions < {CONJUNC_KM} km...")
-t0_screen = time.perf_counter()
 
-# pos_A_pinn: (N_A, N_TIME, 3), pos_B: (N_B, N_TIME, 3)
-# Pairwise distances: broadcast over (N_A, N_B, N_TIME)
+# --- Method 1: Brute-force O(N_A × N_B × T) ---
+print(f"\nBrute-force screening: {N_A * N_B:,} pairs × {N_TIME} timesteps...")
+t0_brute = time.perf_counter()
+
 diff      = pos_A_pinn[:, None, :, :] - pos_B[None, :, :, :]   # (N_A, N_B, N_TIME, 3)
 distances = np.linalg.norm(diff, axis=3)                         # (N_A, N_B, N_TIME)
 min_dist  = distances.min(axis=2)                                 # (N_A, N_B)
 
-t_screen_ms = (time.perf_counter() - t0_screen) * 1e3
+t_brute_ms = (time.perf_counter() - t0_brute) * 1e3
+n_conj_brute = int((min_dist < CONJUNC_KM).sum())
+overall_min  = float(min_dist.min())
+print(f"  Done in {t_brute_ms:.1f} ms  |  Conjunctions: {n_conj_brute}")
 
-n_conjunctions = int((min_dist < CONJUNC_KM).sum())
-overall_min    = float(min_dist.min())
-print(f"  Screening done in {t_screen_ms:.1f} ms")
-print(f"  Conjunctions detected (< {CONJUNC_KM} km): {n_conjunctions}")
-print(f"  Closest approach: {overall_min:.2f} km")
+# --- Method 2: KD-tree O((N_A + N_B) × log(N_A + N_B) × T) ---
+print(f"KD-tree screening: {N_A + N_B} satellites × {N_TIME} timesteps...")
+t0_kdtree = time.perf_counter()
+
+conj_events = []
+for t_idx in range(N_TIME):
+    all_pos = np.vstack([pos_A_pinn[:, t_idx, :], pos_B[:, t_idx, :]])
+    tree = cKDTree(all_pos)
+    pairs = tree.query_pairs(r=CONJUNC_KM)
+    for (i, j) in pairs:
+        if i < N_A and j >= N_A:
+            conj_events.append((i, j - N_A, t_idx))
+        elif j < N_A and i >= N_A:
+            conj_events.append((j, i - N_A, t_idx))
+
+t_kdtree_ms = (time.perf_counter() - t0_kdtree) * 1e3
+conj_pairs_kd = set((ev[0], ev[1]) for ev in conj_events)
+n_conj_kdtree = len(conj_pairs_kd)
+print(f"  Done in {t_kdtree_ms:.1f} ms  |  Conjunctions: {n_conj_kdtree}")
+print(f"  Close-approach events across all timesteps: {len(conj_events)}")
+
+# Validate both methods agree
+assert n_conj_brute == n_conj_kdtree, \
+    f"Mismatch: brute={n_conj_brute}, KD-tree={n_conj_kdtree}"
+print(f"  Methods agree: {n_conj_brute} conjunction pairs, closest {overall_min:.2f} km")
+
+n_conjunctions = n_conj_brute   # used by plots / summary
+
+# ── Scalability benchmark (single-timestep, synthetic positions) ──────────────
+print("\n-- Scalability: Brute-force vs KD-tree (single timestep) --")
+scale_results = []
+for N_test in [100, 500, 1000, 2000]:
+    rng = np.random.default_rng(42)
+    r_rand = R_ORBIT + rng.uniform(-10, 10, N_test)
+    theta_rand = rng.uniform(0, 2 * math.pi, N_test)
+    test_pos = np.column_stack([
+        r_rand * np.cos(theta_rand),
+        r_rand * np.sin(theta_rand),
+        rng.uniform(-50, 50, N_test),
+    ])
+    # Brute-force
+    t0 = time.perf_counter()
+    diffs = test_pos[:, None, :] - test_pos[None, :, :]
+    _ = int((np.linalg.norm(diffs, axis=2) < CONJUNC_KM).sum()) // 2
+    t_bf = (time.perf_counter() - t0) * 1e3
+    del diffs
+    # KD-tree
+    t0 = time.perf_counter()
+    _ = len(cKDTree(test_pos).query_pairs(r=CONJUNC_KM))
+    t_kd = (time.perf_counter() - t0) * 1e3
+    scale_results.append((N_test, t_bf, t_kd))
+    ratio = t_bf / t_kd if t_kd > 0.01 else float("inf")
+    print(f"  N={N_test:>5}: Brute={t_bf:>8.1f} ms  KD-tree={t_kd:>8.1f} ms  ({ratio:.1f}x)")
 
 # ── Plots ─────────────────────────────────────────────────────────────────────
 fig, axes = plt.subplots(2, 2, figsize=(14, 11))
@@ -217,26 +269,22 @@ ax.set_xlabel("Catalog-B satellite index")
 ax.set_ylabel("Catalog-A satellite index")
 ax.set_title(f"Min. A–B Separation Heatmap ({n_show}×{n_show} shown)")
 # Overlay threshold contour
-cs = ax.contour(min_dist[:n_show, :n_show], levels=[CONJUNC_KM], colors="red", lw=1.5)
+cs = ax.contour(min_dist[:n_show, :n_show], levels=[CONJUNC_KM], colors="red", linewidths=1.5)
 ax.clabel(cs, fmt=f"{CONJUNC_KM:.0f} km threshold")
 
-# Panel 4: Timing bar chart
+# Panel 4: Timing comparison (propagation + screening)
 ax = axes[1, 1]
-methods  = ["PINN\nbatch", "ODE\nintegration"]
-times_ms = [t_pinn_ms, t_ode_ms]
-cols     = ["tab:blue", "tab:orange"]
+methods  = ["PINN\npropag.", "KD-tree\nscreen", "Brute-force\nscreen", "ODE\npropag."]
+times_ms = [t_pinn_ms, t_kdtree_ms, t_brute_ms, t_ode_ms]
+cols     = ["tab:blue", "tab:green", "tab:red", "tab:orange"]
 bars     = ax.bar(methods, times_ms, color=cols, alpha=0.85, edgecolor="k", lw=0.8)
 for bar, v in zip(bars, times_ms):
     ax.text(bar.get_x() + bar.get_width() / 2,
             bar.get_height() + max(times_ms) * 0.02,
-            f"{v:.0f} ms", ha="center", va="bottom", fontsize=12, fontweight="bold")
+            f"{v:.0f} ms", ha="center", va="bottom", fontsize=10, fontweight="bold")
 ax.set_ylabel("Wall-clock time (ms)")
-ax.set_title(f"Propagation Speed: {N_A} Satellites × {N_TIME} Timesteps")
+ax.set_title(f"Timing: {N_A + N_B} Satellites × {N_TIME} Timesteps")
 ax.grid(True, alpha=0.3, axis="y")
-ax.text(0.5, 0.6,
-        f"{t_ode_ms / t_pinn_ms:.1f}× faster",
-        transform=ax.transAxes, ha="center", va="center",
-        fontsize=16, color="tab:blue", fontweight="bold")
 
 plt.tight_layout()
 out_png = os.path.join(FIGURES_DIR, "conjunction_screening.png")
@@ -248,21 +296,33 @@ print(f"\nSaved: {out_png}")
 table_path = os.path.join(FIGURES_DIR, "conjunction_table.txt")
 with open(table_path, "w") as f:
     f.write("LEO Conjunction Screening -- PINN Surrogate Propagator\n")
-    f.write("=" * 56 + "\n\n")
+    f.write("=" * 64 + "\n\n")
     f.write(f"Catalog A: {N_A} satellites @ {R_ORBIT:.1f} km (400 km LEO)\n")
     f.write(f"Catalog B: {N_B} satellites @ {R_B:.1f} km  (405 km LEO)\n")
     f.write(f"Time window: {T_SIM/3600:.2f} h ({N_TIME} timesteps)\n\n")
-    f.write(f"{'Metric':<35}  {'Value':>15}\n")
-    f.write("-" * 56 + "\n")
-    f.write(f"{'PINN batch inference time':<35}  {t_pinn_ms:>12.1f} ms\n")
-    f.write(f"{'ODE integration time':<35}  {t_ode_ms:>12.0f} ms\n")
-    f.write(f"{'PINN speed-up':<35}  {t_ode_ms/t_pinn_ms:>11.1f} x\n")
-    f.write(f"{'Conjunction screening time':<35}  {t_screen_ms:>12.1f} ms\n")
-    f.write(f"{'Pairs screened':<35}  {N_A*N_B:>15,}\n")
-    f.write(f"{'Conjunctions flagged (< {CONJUNC_KM} km)':<35}  {n_conjunctions:>15}\n")
-    f.write(f"{'Closest approach':<35}  {overall_min:>12.2f} km\n")
-    f.write(f"{'PINN mean error vs ODE':<35}  {mean_err:>12.2f} km\n")
-    f.write(f"{'PINN max  error vs ODE':<35}  {max_err:>12.2f} km\n")
-    f.write("=" * 56 + "\n")
+    f.write(f"{'Metric':<40}  {'Value':>18}\n")
+    f.write("-" * 64 + "\n")
+    f.write(f"{'PINN batch inference time':<40}  {t_pinn_ms:>15.1f} ms\n")
+    f.write(f"{'ODE integration time':<40}  {t_ode_ms:>15.0f} ms\n")
+    f.write(f"{'PINN propagation speed-up':<40}  {t_ode_ms/t_pinn_ms:>14.1f} x\n")
+    f.write(f"{'Brute-force screening time':<40}  {t_brute_ms:>15.1f} ms\n")
+    f.write(f"{'KD-tree screening time':<40}  {t_kdtree_ms:>15.1f} ms\n")
+    if t_kdtree_ms > 0.01:
+        f.write(f"{'KD-tree vs brute-force':<40}  {t_brute_ms/t_kdtree_ms:>14.1f} x\n")
+    f.write(f"{'Pairs screened':<40}  {N_A*N_B:>18,}\n")
+    f.write(f"{'Conjunctions (< {CONJUNC_KM} km)':<40}  {n_conjunctions:>18}\n")
+    f.write(f"{'Close-approach events':<40}  {len(conj_events):>18,}\n")
+    f.write(f"{'Closest approach':<40}  {overall_min:>15.2f} km\n")
+    f.write(f"{'PINN mean error vs ODE':<40}  {mean_err:>15.2f} km\n")
+    f.write(f"{'PINN max  error vs ODE':<40}  {max_err:>15.2f} km\n")
+    f.write("=" * 64 + "\n\n")
+    f.write("Scalability Benchmark (single timestep)\n")
+    f.write("-" * 64 + "\n")
+    f.write(f"{'N satellites':<15} {'Brute-force':>15} {'KD-tree':>15} {'Speed-up':>12}\n")
+    f.write("-" * 64 + "\n")
+    for N_s, t_bf, t_kd in scale_results:
+        ratio = t_bf / t_kd if t_kd > 0.01 else float("inf")
+        f.write(f"{N_s:<15} {t_bf:>13.1f} ms {t_kd:>13.1f} ms {ratio:>10.1f} x\n")
+    f.write("=" * 64 + "\n")
 print(f"Saved: {table_path}")
 print("\nDone.")

@@ -1,19 +1,32 @@
 LEO Conjunction Screening -- PINN Surrogate Propagator
-========================================================
+================================================================
 
 Catalog A: 50 satellites @ 6778.1 km (400 km LEO)
 Catalog B: 50 satellites @ 6783.1 km  (405 km LEO)
 Time window: 4.63 h (1000 timesteps)
 
-Metric                                         Value
---------------------------------------------------------
-PINN batch inference time                    57.0 ms
-ODE integration time                          231 ms
-PINN speed-up                                4.1 x
-Conjunction screening time                   62.6 ms
-Pairs screened                                 2,500
-Conjunctions flagged (< {CONJUNC_KM} km)                4
-Closest approach                             7.58 km
-PINN mean error vs ODE                      74.02 km
-PINN max  error vs ODE                     124.34 km
-========================================================
+Metric                                                 Value
+----------------------------------------------------------------
+PINN batch inference time                            39.1 ms
+ODE integration time                                  514 ms
+PINN propagation speed-up                           13.2 x
+Brute-force screening time                           50.5 ms
+KD-tree screening time                               30.2 ms
+KD-tree vs brute-force                               1.7 x
+Pairs screened                                         2,500
+Conjunctions (< {CONJUNC_KM} km)                          19
+Close-approach events                                    839
+Closest approach                                     5.36 km
+PINN mean error vs ODE                              17.01 km
+PINN max  error vs ODE                              23.07 km
+================================================================
+
+Scalability Benchmark (single timestep)
+----------------------------------------------------------------
+N satellites        Brute-force         KD-tree     Speed-up
+----------------------------------------------------------------
+100                       0.3 ms           0.0 ms        7.1 x
+500                       7.0 ms           0.2 ms       28.2 x
+1000                     27.5 ms           0.4 ms       65.2 x
+2000                    124.6 ms           0.7 ms      186.6 x
+================================================================
