@@ -8,6 +8,7 @@ Provides:
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 # -- Default architecture constants ------------------------------------------
@@ -33,9 +34,12 @@ class FourierPINN(nn.Module):
     periodic network and only grows secular terms as training demands them.
     """
 
-    def __init__(self, n_freq=N_FREQ, hidden=HIDDEN, n_layers=LAYERS):
+    def __init__(self, n_freq=N_FREQ, hidden=HIDDEN, n_layers=LAYERS,
+                 dropout_p=0.0):
         super().__init__()
         self.n_freq = n_freq
+        self.dropout_p = dropout_p
+        self._mc_dropout = False
         input_dim = 2 * n_freq
         self.register_buffer(
             "freqs", torch.arange(1, n_freq + 1, dtype=torch.float64)
@@ -64,9 +68,43 @@ class FourierPINN(nn.Module):
 
     def forward(self, t):
         enc = self.encode(t)                    # (N, 2*N_FREQ)
-        periodic = self.net(enc)                # (N, 3) -- purely periodic part
+
+        # MC Dropout path: apply F.dropout between layers (no nn.Dropout modules
+        # so state dict keys remain identical to the original model).
+        if self._mc_dropout and self.dropout_p > 0:
+            x = enc
+            for layer in self.net:
+                x = layer(x)
+                if isinstance(layer, nn.Tanh):
+                    x = F.dropout(x, p=self.dropout_p, training=True)
+            periodic = x
+        else:
+            periodic = self.net(enc)            # fast path -- no dropout
+
         secular = self.sec_head(enc) * t        # (N, 3) -- t-modulated drift part
         return periodic + secular
+
+    # -- MC Dropout helpers ---------------------------------------------------
+
+    def enable_dropout(self):
+        """Enable MC Dropout for uncertainty estimation."""
+        self._mc_dropout = True
+
+    def disable_dropout(self):
+        """Disable MC Dropout (restore fast deterministic path)."""
+        self._mc_dropout = False
+
+    def mc_forward(self, t, n_mc=50):
+        """Run *n_mc* stochastic forward passes and return stacked results.
+
+        Returns
+        -------
+        samples : Tensor, shape (n_mc, N, 3)
+        """
+        self.enable_dropout()
+        samples = torch.stack([self.forward(t) for _ in range(n_mc)])
+        self.disable_dropout()
+        return samples
 
 
 # -- VanillaMLP ---------------------------------------------------------------
