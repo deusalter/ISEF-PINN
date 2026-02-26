@@ -7,14 +7,14 @@ Time window: 4.63 h (1000 timesteps)
 
 Metric                                                 Value
 ----------------------------------------------------------------
-PINN batch inference time                            39.1 ms
-ODE integration time                                  514 ms
-PINN propagation speed-up                           13.2 x
-Brute-force screening time                           50.5 ms
-KD-tree screening time                               30.2 ms
+PINN batch inference time                            37.3 ms
+ODE integration time                                  477 ms
+PINN propagation speed-up                           12.8 x
+Brute-force screening time                           51.8 ms
+KD-tree screening time                               30.3 ms
 KD-tree vs brute-force                               1.7 x
 Pairs screened                                         2,500
-Conjunctions (< {CONJUNC_KM} km)                          19
+Conjunctions (< 10.0 km)                                  19
 Close-approach events                                    839
 Closest approach                                     5.36 km
 PINN mean error vs ODE                              17.01 km
@@ -25,8 +25,37 @@ Scalability Benchmark (single timestep)
 ----------------------------------------------------------------
 N satellites        Brute-force         KD-tree     Speed-up
 ----------------------------------------------------------------
-100                       0.3 ms           0.0 ms        7.1 x
-500                       7.0 ms           0.2 ms       28.2 x
-1000                     27.5 ms           0.4 ms       65.2 x
-2000                    124.6 ms           0.7 ms      186.6 x
+100                       0.3 ms           0.0 ms        7.2 x
+500                       6.5 ms           0.2 ms       27.1 x
+1000                     27.3 ms           0.4 ms       62.5 x
+2000                    105.2 ms           1.5 ms       68.9 x
+================================================================
+
+MC Dropout Uncertainty Quantification
+(n_mc=50, dropout_p=0.1, r_combined=10 m)
+----------------------------------------------------------------
+NOTE: Model was trained WITHOUT dropout. These uncertainty
+estimates are illustrative, not calibrated.
+
+Pair          Miss (km)    sigma_x    sigma_y    sigma_z           Pc
+----------------------------------------------------------------
+A36 -B36        9.228  1564.7040  1422.6614  1282.7485     2.74e-11
+A46 -B46        5.584  1375.6815  1539.6708  1222.9522     2.68e-11
+A47 -B47        5.468  1719.7648  1529.1657  1239.4027     2.68e-11
+A45 -B45        5.750  1848.5128  1584.0748  1182.9114     2.67e-11
+A41 -B41        6.855  1454.5121  1468.9660  1367.4597     2.52e-11
+A44 -B44        5.963  1712.0126  1582.4151  1305.0153     2.44e-11
+A38 -B38        8.167  1432.3825  1513.7950  1367.0717     2.42e-11
+A37 -B37        8.686  1448.1601  1752.9781  1185.9992     2.40e-11
+A2  -B2         7.814  1510.7041  1680.4398  1291.7215     2.34e-11
+A35 -B35        9.825  1613.6213  1427.1074  1498.0649     2.33e-11
+A3  -B3         9.763  1467.6311  1605.3052  1409.3078     2.28e-11
+A42 -B42        6.520  1707.8080  1939.7240  1235.5086     2.21e-11
+A43 -B43        6.208  1569.8570  1751.5375  1323.5466     2.16e-11
+A39 -B39        7.685  1859.0981  1700.9050  1471.7227     1.98e-11
+A49 -B49        5.365  1281.4975  1632.2653  1687.6463     1.82e-11
+A1  -B1         6.244  1809.5239  1870.1916  1493.0132     1.78e-11
+A40 -B40        7.260  1430.9800  1773.9991  1651.7858     1.73e-11
+A0  -B0         5.411  1542.6914  1696.0596  1796.1863     1.68e-11
+A48 -B48        5.394  1463.5315  1829.2579  1674.4044     1.67e-11
 ================================================================
