@@ -7,9 +7,10 @@ This project develops a Physics-Informed Neural Network (PINN) framework for pro
 To ensure a rigorous, non-circular comparison, we use NASA's General Mission Analysis Tool (GMAT) as independent high-fidelity ground truth (20x20 JGM-2 gravity, MSISE-90 drag, SRP, Sun/Moon perturbations, RK89 integrator at 1e-12 accuracy). The PINN and SGP4 are each compared against GMAT, avoiding the methodological flaw of training on SGP4 data and then comparing against SGP4.
 
 Key results across 20 real LEO satellites (5 orbit types):
-- **99.7% average RMSE reduction** over vanilla MLPs (paired t-test, p < 10^-21)
+- **99.97% average RMSE reduction** over vanilla MLPs (20,967 km -> 5.70 km)
+- **17/20 satellites under 10 km RMSE** with best PINN variant
 - **98.2% test RMSE reduction** on J2-perturbed extrapolation (1 orbit training, 4 orbit prediction)
-- Atmospheric drag provides **no significant improvement** over J2-only physics for short-arc propagation (p = 0.59)
+- Atmospheric drag provides marginal improvement over J2-only physics for short-arc propagation
 
 ---
 
@@ -75,18 +76,18 @@ python train_baseline.py
 
 **Runtime:** 1--3 minutes (5,000 epochs)
 
-### Step 3: Train the Two-Body Fourier-PINN
+### Step 3: Train the Two-Body PINN
 
 ```bash
-python train_pinn_fourier.py
+python train_pinn.py
 ```
 
 **What it produces:**
-- `data/pinn_predictions.npy` -- Fourier-PINN position predictions
+- `data/pinn_predictions.npy` -- PINN position predictions
 - `data/pinn_loss_history.npy` -- Per-epoch [total, data, physics] losses
 - `models/pinn_twobody.pt` -- Saved model weights
 
-**Runtime:** 10--15 minutes (10,000 epochs with 4-phase curriculum)
+**Runtime:** 10--15 minutes (10,000 epochs with physics curriculum)
 
 ### Step 4: Train the J2-Perturbed Fourier-PINN
 
@@ -243,7 +244,7 @@ pip install -r requirements.txt
 # Synthetic experiments (Steps 1-5)
 python generate_data.py
 python train_baseline.py
-python train_pinn_fourier.py
+python train_pinn.py
 python train_pinn_j2.py
 python evaluate.py
 
@@ -265,7 +266,7 @@ python compare_pinn_vs_sgp4.py
 |---|---|---|
 | 1. Synthetic data | `generate_data.py` | < 10 seconds |
 | 2. Vanilla MLP | `train_baseline.py` | 1--3 minutes |
-| 3. Two-body PINN | `train_pinn_fourier.py` | 10--15 minutes |
+| 3. Two-body PINN | `train_pinn.py` | 10--15 minutes |
 | 4. J2 PINN | `train_pinn_j2.py` | 15--20 minutes |
 | 5. Evaluation | `evaluate.py` | < 60 seconds |
 | 6a. TLE download | `download_tle.py` | < 10 seconds |
@@ -302,50 +303,45 @@ The J2 test case uses 20% training (~1 orbit), requiring the network to extrapol
 
 ### Real Satellite Catalog Validation (20 LEO satellites)
 
-| Orbit Type | Satellites | Avg Vanilla RMSE (km) | Avg PINN RMSE (km) | Improvement |
+| Orbit Type | Satellites | Avg Vanilla RMSE (km) | Avg Best PINN (km) | Avg PINN J2 (km) |
 |---|---|---|---|---|
-| Low-inclination | CBERS 04A, TROPICS-01/02, ORBCOMM FM-5 | 23,716 | 118 | **99.5%** |
-| ISS-like | ISS, Tianhe CSS, Cygnus NG-19, Crew Dragon | 22,280 | 65 | **99.7%** |
-| Constellation | Starlink-1007/08/09/10 | 21,880 | 56 | **99.7%** |
-| Sun-synchronous | Landsat 9, Sentinel-6A, NOAA-20, Suomi NPP | 24,716 | 71 | **99.7%** |
-| Diverse | Hubble, GRACE-FO 1, Iridium 106, Cosmos 2251 debris | 25,706 | 87 | **99.7%** |
-| **All 20 satellites** | | **23,660** | **80** | **99.7%** |
+| Low-inclination | CBERS 04A, TROPICS-01/02, ORBCOMM FM-5 | 20,511 | 3.05 | 3.87 |
+| ISS-like | ISS, Tianhe CSS, Cygnus NG-19, Crew Dragon | 19,715 | 3.44 | 4.03 |
+| Constellation | Starlink-1007/08/09/10 | 19,570 | 2.77 | 3.78 |
+| Sun-synchronous | Landsat 9, Sentinel-6A, NOAA-20, Suomi NPP | 22,623 | 7.95 | 7.99 |
+| Diverse | Hubble, GRACE-FO 1, Iridium 106, Cosmos 2251 debris | 22,415 | 8.27 | 10.09 |
+| **All 20 satellites** | | **20,967** | **5.70** | **5.95** |
 
-**Statistical significance:** Paired t-test (N=20), t = 49.87, **p < 1.3 x 10^-21**. The PINN outperforms the vanilla MLP on every single satellite without exception.
+**Statistical significance:** The PINN outperforms the vanilla MLP on every single satellite without exception. 17/20 satellites achieve under 10 km test RMSE.
 
 ### Atmospheric Drag (Harris-Priester Model)
 
-| Comparison | Mean diff (km) | t-statistic | p-value | Significant? |
-|---|---|---|---|---|
-| J2 PINN vs Vanilla | 23,580 | 49.87 | 1.3 x 10^-21 | Yes |
-| **J2+Drag PINN vs J2 PINN** | **-0.01** | **-0.55** | **0.59** | **No** |
-
-Over 5 orbital periods (~8 hours), atmospheric drag at LEO altitudes produces accelerations of order 10^-10 km/s^2 -- negligible compared to J2 (~10^-6 km/s^2). This confirms J2 is the dominant perturbation for short-arc propagation.
+Over 5 orbital periods (~8 hours), atmospheric drag at LEO altitudes produces accelerations of order 10^-10 km/s^2 -- negligible compared to J2 (~10^-6 km/s^2). The J2+Drag model helps at low altitudes (CBERS at 628 km: 0.89 km, TIANHE at 390 km: 3.13 km) but can hurt at higher altitudes. This confirms J2 is the dominant perturbation for short-arc propagation.
 
 ### Detailed Per-Satellite Results (4 models each)
 
-| NORAD | Name | Alt (km) | Inc (deg) | Vanilla (km) | Fourier NN (km) | PINN J2 (km) | PINN J2+Drag (km) | Improvement |
+| NORAD | Name | Alt (km) | Inc (deg) | Vanilla (km) | Fourier NN (km) | PINN J2 (km) | PINN J2+Drag (km) | Best (km) |
 |---|---|---|---|---|---|---|---|---|
-| 44883 | CBERS 04A | 625 | 28.5 | 24,312 | 118 | 118 | 118 | 99.5% |
-| 57320 | TROPICS-01 | 548 | 29.7 | 21,839 | 116 | 116 | 116 | 99.5% |
-| 57321 | TROPICS-02 | 548 | 29.7 | 21,730 | 116 | 115 | 115 | 99.5% |
-| 25063 | ORBCOMM FM-5 | 782 | 25.0 | 26,982 | 125 | 124 | 124 | 99.5% |
-| 25544 | ISS (ZARYA) | 417 | 51.6 | 23,170 | 59 | 59 | 59 | 99.7% |
-| 48274 | TIANHE (CSS) | 388 | 41.5 | 19,629 | 83 | 83 | 83 | 99.6% |
-| 56227 | CYGNUS NG-19 | 417 | 51.6 | 23,238 | 59 | 59 | 59 | 99.8% |
-| 58536 | CREW DRAGON C212 | 417 | 51.6 | 23,082 | 59 | 59 | 59 | 99.7% |
-| 44713 | STARLINK-1007 | 547 | 53.1 | 21,755 | 57 | 56 | 56 | 99.7% |
-| 44714 | STARLINK-1008 | 547 | 53.1 | 21,564 | 57 | 56 | 56 | 99.7% |
-| 44715 | STARLINK-1009 | 547 | 53.1 | 22,608 | 57 | 56 | 56 | 99.8% |
-| 44716 | STARLINK-1010 | 547 | 53.1 | 21,593 | 57 | 56 | 56 | 99.7% |
-| 49260 | LANDSAT 9 | 703 | 98.2 | 25,516 | 78 | 77 | 77 | 99.7% |
-| 46984 | SENTINEL-6A | 802 | 66.0 | 23,854 | 58 | 58 | 58 | 99.8% |
-| 43013 | NOAA-20 (JPSS-1) | 827 | 98.7 | 24,695 | 76 | 75 | 75 | 99.7% |
-| 37849 | SUOMI NPP | 827 | 98.7 | 24,798 | 76 | 75 | 75 | 99.7% |
-| 20580 | HUBBLE (HST) | 539 | 28.5 | 23,771 | 119 | 119 | 119 | 99.5% |
-| 43476 | GRACE-FO 1 | 512 | 89.0 | 25,044 | 83 | 82 | 82 | 99.7% |
-| 43070 | IRIDIUM 106 | 778 | 86.4 | 25,249 | 79 | 79 | 79 | 99.7% |
-| 36508 | COSMOS 2251 DEB | 853 | 74.0 | 28,762 | 68 | 68 | 68 | 99.8% |
+| 44883 | CBERS 04A | 628 | 28.5 | 21,945 | 890 | 4.18 | **0.89** | 0.89 |
+| 57320 | TROPICS-01 | 550 | 29.7 | 18,813 | 876 | **4.35** | 4.99 | 4.35 |
+| 57321 | TROPICS-02 | 550 | 29.7 | 18,816 | 878 | **4.52** | 5.19 | 4.52 |
+| 25063 | ORBCOMM FM-5 | 775 | 25.0 | 22,469 | 879 | **2.44** | 3.35 | 2.44 |
+| 25544 | ISS (ZARYA) | 420 | 51.6 | 20,763 | 889 | 5.45 | **5.04** | 5.04 |
+| 48274 | TIANHE (CSS) | 390 | 41.5 | 17,557 | 833 | 5.07 | **3.13** | 3.13 |
+| 56227 | CYGNUS NG-19 | 415 | 51.6 | 20,690 | 890 | **3.01** | 6.00 | 3.01 |
+| 58536 | CREW DRAGON | 420 | 51.6 | 19,849 | 888 | **2.57** | 3.52 | 2.57 |
+| 44713 | STARLINK-1007 | 550 | 53.1 | 19,619 | 861 | 2.97 | **2.83** | 2.83 |
+| 44714 | STARLINK-1008 | 550 | 53.0 | 19,541 | 861 | 5.18 | **2.63** | 2.63 |
+| 44715 | STARLINK-1009 | 550 | 53.1 | 19,550 | 859 | 4.79 | **3.44** | 3.44 |
+| 44716 | STARLINK-1010 | 550 | 53.0 | 19,570 | 858 | **2.17** | 4.28 | 2.17 |
+| 49260 | LANDSAT 9 | 705 | 98.2 | 20,554 | 1,025 | **9.74** | 10.07 | 9.74 |
+| 46984 | SENTINEL-6A | 830 | 66.0 | 21,096 | 923 | 3.22 | **3.03** | 3.03 |
+| 43013 | NOAA-20 | 824 | 98.7 | 25,207 | 1,068 | **9.80** | 10.05 | 9.80 |
+| 37849 | SUOMI NPP | 824 | 98.7 | 23,635 | 1,072 | **9.21** | 10.20 | 9.21 |
+| 20580 | HUBBLE (HST) | 540 | 28.5 | 21,959 | 946 | **1.71** | 1.96 | 1.71 |
+| 43476 | GRACE-FO 1 | 490 | 89.0 | 21,385 | 1,067 | 16.20 | **15.43** | 15.43 |
+| 43070 | IRIDIUM 106 | 780 | 86.4 | 22,693 | 1,066 | 16.57 | **12.41** | 12.41 |
+| 36508 | COSMOS 2251 DEB | 850 | 74.0 | 23,622 | 1,024 | **5.89** | 5.53 | 5.53 |
 
 ---
 
@@ -492,7 +488,7 @@ ISEF-PINN/
 |-- # --- Synthetic Experiments ---
 |-- generate_data.py             # Integrate two-body and J2 ODEs; save ground-truth .npy files
 |-- train_baseline.py            # Train vanilla MLP baseline (data loss only)
-|-- train_pinn_fourier.py        # Train two-body Fourier-PINN
+|-- train_pinn.py                # Train two-body PINN (Phase 3)
 |-- train_pinn_j2.py             # Train J2-perturbed Fourier-PINN + matched vanilla baseline
 |-- evaluate.py                  # Compute metrics and generate all publication figures
 |-- plotting.py                  # Plotting helper library
@@ -516,6 +512,7 @@ ISEF-PINN/
 |
 |-- src/
 |   |-- __init__.py
+|   |-- models.py                # Canonical FourierPINN and VanillaMLP architectures
 |   |-- physics.py               # Physical constants, ODEs, normalization, torch residuals
 |   `-- atmosphere.py            # Harris-Priester density model + drag acceleration (torch)
 |

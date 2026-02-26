@@ -24,27 +24,33 @@ try:
 except ImportError:
     pass
 
-GMAT_DOWNLOAD_URL = "https://sourceforge.net/projects/gmat/files/GMAT/R2022a/"
+GMAT_DOWNLOAD_URL = "https://sourceforge.net/projects/gmat/files/GMAT/GMAT-R2022a/"
+
+# Executable names to search for (R2022a uses GMAT.exe, older versions used GmatConsole.exe)
+_EXE_NAMES = ["GMAT.exe", "GmatConsole.exe"]
 
 # Default Windows installation paths (most common locations)
-_DEFAULT_PATHS = [
-    Path(r"C:\GMAT\R2022a\bin\GmatConsole.exe"),
-    Path(r"C:\Program Files\GMAT\R2022a\bin\GmatConsole.exe"),
-    Path(r"C:\Program Files (x86)\GMAT\R2022a\bin\GmatConsole.exe"),
-    Path(os.path.expanduser("~")) / "GMAT" / "R2022a" / "bin" / "GmatConsole.exe",
+_DEFAULT_ROOTS = [
+    Path(r"C:\GMAT\R2022a"),
+    Path(r"C:\Program Files\GMAT\R2022a"),
+    Path(r"C:\Program Files (x86)\GMAT\R2022a"),
+    Path(os.path.expanduser("~")) / "GMAT" / "R2022a",
     # R2020a fallbacks
-    Path(r"C:\GMAT\R2020a\bin\GmatConsole.exe"),
-    Path(r"C:\Program Files\GMAT\R2020a\bin\GmatConsole.exe"),
+    Path(r"C:\GMAT\R2020a"),
+    Path(r"C:\Program Files\GMAT\R2020a"),
 ]
 
 
 def get_gmat_console_path() -> Path:
-    """Locate GmatConsole.exe on the system.
+    """Locate the GMAT executable on the system.
+
+    R2022a uses GMAT.exe (with --minimize --run --exit flags for batch mode).
+    Older versions used GmatConsole.exe.
 
     Returns
     -------
     Path
-        Absolute path to GmatConsole.exe.
+        Absolute path to the GMAT executable.
 
     Raises
     ------
@@ -55,22 +61,27 @@ def get_gmat_console_path() -> Path:
     env_path = os.environ.get("GMAT_PATH")
     if env_path:
         p = Path(env_path)
-        # If user points to the GMAT root directory, append bin/GmatConsole.exe
+        # If user points to the GMAT root directory, search bin/ for executables
         if p.is_dir():
-            console = p / "bin" / "GmatConsole.exe"
-            if console.exists():
-                return console
+            for exe_name in _EXE_NAMES:
+                console = p / "bin" / exe_name
+                if console.exists():
+                    return console
         # If user points directly to the executable
-        if p.is_file() and p.name.lower() == "gmatconsole.exe":
+        if p.is_file() and p.name.lower() in [n.lower() for n in _EXE_NAMES]:
             return p
         # If user points to the bin directory
-        if p.is_dir() and (p / "GmatConsole.exe").exists():
-            return p / "GmatConsole.exe"
+        if p.is_dir():
+            for exe_name in _EXE_NAMES:
+                if (p / exe_name).exists():
+                    return p / exe_name
 
     # 2. Check default install paths
-    for default in _DEFAULT_PATHS:
-        if default.exists():
-            return default
+    for root in _DEFAULT_ROOTS:
+        for exe_name in _EXE_NAMES:
+            candidate = root / "bin" / exe_name
+            if candidate.exists():
+                return candidate
 
     raise FileNotFoundError(
         "GMAT installation not found.\n"
@@ -153,9 +164,17 @@ Propagate prop(TestSat) {TestSat.ElapsedSecs = 60.0};
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text(script_content)
 
+    # R2022a: GMAT.exe --minimize --run --exit <script>
+    # Older:  GmatConsole.exe --run --exit <script>
+    is_gui_exe = console.name.lower() == "gmat.exe"
+    cmd = [str(console)]
+    if is_gui_exe:
+        cmd += ["--minimize", "--no_splash"]
+    cmd += ["--run", "--exit", str(script_path)]
+
     try:
         result = subprocess.run(
-            [str(console), "--run", "--exit", str(script_path)],
+            cmd,
             capture_output=True,
             text=True,
             timeout=60,

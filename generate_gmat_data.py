@@ -255,13 +255,13 @@ GMAT HighFidelityProp.MaxStep = 300;
 GMAT HighFidelityProp.MaxStepAttempts = 50;
 
 %--- Report File ---
-Create ReportFile Report;
-GMAT Report.Filename = '{report_path.as_posix()}';
-GMAT Report.Add = {{Sat.ElapsedSecs, Sat.EarthMJ2000Eq.X, Sat.EarthMJ2000Eq.Y, Sat.EarthMJ2000Eq.Z, Sat.EarthMJ2000Eq.VX, Sat.EarthMJ2000Eq.VY, Sat.EarthMJ2000Eq.VZ}};
-GMAT Report.WriteHeaders = false;
-GMAT Report.LeftJustify = On;
-GMAT Report.ZeroFill = On;
-GMAT Report.ColumnWidth = 23;
+Create ReportFile OrbitReport;
+GMAT OrbitReport.Filename = '{report_path.as_posix()}';
+GMAT OrbitReport.Add = {{Sat.ElapsedSecs, Sat.EarthMJ2000Eq.X, Sat.EarthMJ2000Eq.Y, Sat.EarthMJ2000Eq.Z, Sat.EarthMJ2000Eq.VX, Sat.EarthMJ2000Eq.VY, Sat.EarthMJ2000Eq.VZ}};
+GMAT OrbitReport.WriteHeaders = false;
+GMAT OrbitReport.LeftJustify = On;
+GMAT OrbitReport.ZeroFill = On;
+GMAT OrbitReport.ColumnWidth = 23;
 
 %--- Mission Sequence ---
 BeginMissionSequence;
@@ -299,9 +299,17 @@ def run_gmat_script(script_path: Path) -> bool:
 
     gmat_root = get_gmat_root()
 
+    # R2022a: GMAT.exe --minimize --run --exit <script>
+    # Older:  GmatConsole.exe --run --exit <script>
+    is_gui_exe = console.name.lower() == "gmat.exe"
+    cmd = [str(console)]
+    if is_gui_exe:
+        cmd += ["--minimize", "--no_splash"]
+    cmd += ["--run", "--exit", str(script_path)]
+
     try:
         result = subprocess.run(
-            [str(console), "--run", "--exit", str(script_path)],
+            cmd,
             capture_output=True,
             text=True,
             timeout=300,  # 5 min timeout per satellite

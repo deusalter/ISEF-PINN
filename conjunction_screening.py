@@ -33,13 +33,13 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
-import torch.nn as nn
 from scipy.integrate import solve_ivp
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 from src.physics import MU, R_EARTH, R_ORBIT, NormalizationParams
+from src.models import FourierPINN
 
 # ── Config ────────────────────────────────────────────────────────────────────
 N_A          = 50          # satellites in catalog A (400 km)
@@ -54,33 +54,8 @@ os.makedirs(FIGURES_DIR, exist_ok=True)
 torch.manual_seed(42)
 np.random.seed(42)
 
-# ── FourierPINN (matches pinn_j2.pt: input_dim=8, purely periodic) ───────────
-# We use the J2 PINN for catalog A.  Its purely periodic encoding
-# (no raw-t term) means sin/cos wrap perfectly for any phase-shifted query:
-#   sin(k * (t + Δt) / t_ref)  -- valid for ALL t, not just training range.
-N_FREQ = 4
-HIDDEN = 64
-LAYERS = 3
-
-class FourierPINN(nn.Module):
-    """J2 Fourier PINN: input_dim = 2*N_FREQ (purely periodic, no raw t)."""
-    def __init__(self, n_freq=N_FREQ, hidden=HIDDEN, n_layers=LAYERS):
-        super().__init__()
-        input_dim = 2 * n_freq          # purely periodic -- NO raw t
-        self.register_buffer("freqs", torch.arange(1, n_freq + 1, dtype=torch.float64))
-        layers = [nn.Linear(input_dim, hidden), nn.Tanh()]
-        for _ in range(n_layers - 1):
-            layers += [nn.Linear(hidden, hidden), nn.Tanh()]
-        layers.append(nn.Linear(hidden, 3))
-        self.net = nn.Sequential(*layers)
-
-    def forward(self, t):
-        wt = t * self.freqs
-        feats = torch.cat([torch.sin(wt), torch.cos(wt)], dim=1)
-        return self.net(feats)
-
-
 # ── Load PINN ─────────────────────────────────────────────────────────────────
+# Uses FourierPINN from src/models.py (N_FREQ=8, secular drift head).
 print("Loading PINN model...")
 norm_A = NormalizationParams(r_ref=R_ORBIT)
 model  = FourierPINN().double()
