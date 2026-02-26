@@ -49,6 +49,7 @@ import torch.nn as nn
 
 from src.physics import MU, R_EARTH, J2, J3, J4, J5, NormalizationParams
 from src.models import FourierPINN
+from src.atmosphere import drag_acceleration_torch
 from satellite_catalog import get_catalog, get_by_norad_id
 from download_tle import load_tle
 from frame_conversion import teme_to_j2000_batch
@@ -201,10 +202,84 @@ def compute_j2_physics_loss(model, t_col, R_NORM, MU_NORM=1.0):
     return torch.mean(residual ** 2)
 
 
+def compute_j2_drag_physics_loss(model, t_col, R_NORM, norm, MU_NORM, cd_a_over_m):
+    """J2-J5 + atmospheric drag physics residual (for long-arc propagation)."""
+    pos = model(t_col)
+    ones = torch.ones(t_col.shape[0], dtype=torch.float64, device=t_col.device)
+
+    vel = []
+    for i in range(3):
+        v_i = torch.autograd.grad(
+            pos[:, i], t_col, ones, create_graph=True, retain_graph=True
+        )[0]
+        vel.append(v_i)
+    vel = torch.cat(vel, dim=1)
+
+    acc = []
+    for i in range(3):
+        a_i = torch.autograd.grad(
+            vel[:, i], t_col, ones, create_graph=True, retain_graph=True
+        )[0]
+        acc.append(a_i)
+    acc = torch.cat(acc, dim=1)
+
+    x_n, y_n, z_n = pos[:, 0:1], pos[:, 1:2], pos[:, 2:3]
+    r = torch.norm(pos, dim=1, keepdim=True).clamp(min=1e-3)
+    r2, r3, r5, r7 = r**2, r**3, r**5, r**7
+
+    gravity = MU_NORM * pos / r3
+
+    z2_r2 = (z_n / r) ** 2
+    j2_coeff = -1.5 * J2 * MU_NORM * (R_NORM ** 2) / r5
+    a_j2 = torch.cat([
+        j2_coeff * x_n * (1.0 - 5.0 * z2_r2),
+        j2_coeff * y_n * (1.0 - 5.0 * z2_r2),
+        j2_coeff * z_n * (3.0 - 5.0 * z2_r2),
+    ], dim=1)
+
+    j3_xy_fac = -2.5 * J3 * MU_NORM * (R_NORM ** 3) / r7
+    j3_xy_term = j3_xy_fac * (3.0 * z_n - 7.0 * z_n ** 3 / r2)
+    a_j3 = torch.cat([
+        j3_xy_term * x_n,
+        j3_xy_term * y_n,
+        (-0.5 * J3 * MU_NORM * (R_NORM ** 3) / r5) * (
+            30.0 * z_n**2 / r2 - 35.0 * z_n**4 / r2**2 - 3.0
+        ),
+    ], dim=1)
+
+    j4_fac = J4 * MU_NORM * (R_NORM ** 4) / r7
+    z4_r4 = z_n**4 / r2**2
+    j4_xy = 1.875 * j4_fac * (1.0 - 14.0 * z2_r2 + 21.0 * z4_r4)
+    a_j4 = torch.cat([
+        j4_xy * x_n,
+        j4_xy * y_n,
+        0.625 * j4_fac * z_n * (15.0 - 70.0 * z2_r2 + 63.0 * z4_r4),
+    ], dim=1)
+
+    r9 = r7 * r2
+    z6_r6 = z4_r4 * z2_r2
+    j5_fac = J5 * MU_NORM * (R_NORM ** 5)
+    j5_xy = (21.0 / 8.0) * j5_fac * z_n / r9 * (33.0 * z4_r4 - 30.0 * z2_r2 + 5.0)
+    a_j5 = torch.cat([
+        j5_xy * x_n,
+        j5_xy * y_n,
+        (3.0 / 8.0) * j5_fac / r7 * (231.0 * z6_r6 - 315.0 * z4_r4 + 105.0 * z2_r2 - 5.0),
+    ], dim=1)
+
+    # Atmospheric drag (convert to physical units, call drag model, renormalize)
+    pos_km = pos * norm.r_ref
+    vel_kms = vel * norm.v_ref
+    a_drag_kms2 = drag_acceleration_torch(pos_km, vel_kms, cd_a_over_m)
+    a_drag_normalized = a_drag_kms2 * (norm.t_ref ** 2 / norm.r_ref)
+
+    residual = acc + gravity - a_j2 - a_j3 - a_j4 - a_j5 - a_drag_normalized
+    return torch.mean(residual ** 2)
+
+
 # ---------------------------------------------------------------------------
 # PINN training (simplified from train_real_orbits.py)
 # ---------------------------------------------------------------------------
-def train_pinn_on_gmat(data, a_km):
+def train_pinn_on_gmat(data, a_km, long_arc=False, cd_a_over_m=0.022):
     """Train a Fourier PINN on GMAT data. Returns predicted positions (km)."""
     N = data.shape[0]
     t_raw = data[:, 0]
@@ -224,17 +299,30 @@ def train_pinn_on_gmat(data, a_km):
 
     n_train = int(N * TRAIN_FRAC)
 
-    t_train = torch.tensor(t_norm_np[:n_train, None], dtype=torch.float64).to(DEVICE)
-    pos_train = torch.tensor(pos_norm_np[:n_train], dtype=torch.float64).to(DEVICE)
+    # For long-arc (50K pts), subsample training data to keep epochs fast
+    if long_arc and n_train > 2000:
+        idx_train = np.linspace(0, n_train - 1, 2000, dtype=int)
+        t_train = torch.tensor(t_norm_np[idx_train, None], dtype=torch.float64).to(DEVICE)
+        pos_train = torch.tensor(pos_norm_np[idx_train], dtype=torch.float64).to(DEVICE)
+    else:
+        t_train = torch.tensor(t_norm_np[:n_train, None], dtype=torch.float64).to(DEVICE)
+        pos_train = torch.tensor(pos_norm_np[:n_train], dtype=torch.float64).to(DEVICE)
     t_all = torch.tensor(t_norm_np[:, None], dtype=torch.float64).to(DEVICE)
 
-    # Adaptive collocation: concentrated near train/test boundary
-    t_col = make_adaptive_collocation(t_norm_np, N_COL, n_train, DEVICE)
+    # Adaptive collocation: more points for longer arcs
+    n_col = N_COL * 3 if long_arc else N_COL
+    t_col = make_adaptive_collocation(t_norm_np, n_col, n_train, DEVICE)
 
     torch.manual_seed(42)
     model = FourierPINN().double().to(DEVICE)
 
-    j2_loss_fn = lambda m, tc: compute_j2_physics_loss(m, tc, R_NORM, MU_NORM)
+    if long_arc:
+        # J2 + drag for 7-day arcs where drag matters
+        physics_loss_fn = lambda m, tc: compute_j2_drag_physics_loss(
+            m, tc, R_NORM, norm, MU_NORM, cd_a_over_m
+        )
+    else:
+        physics_loss_fn = lambda m, tc: compute_j2_physics_loss(m, tc, R_NORM, MU_NORM)
 
     # Separate LR for secular head
     optimizer = _make_optimizer(model, LR_MAX)
@@ -262,7 +350,7 @@ def train_pinn_on_gmat(data, a_km):
 
         lam = get_lambda(ep, CURRICULUM)
         if lam > 0.0:
-            pl = j2_loss_fn(model, t_col)
+            pl = physics_loss_fn(model, t_col)
             total = dl + lam * pl
         else:
             total = dl
@@ -396,7 +484,7 @@ def compare_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022,
     # 1. Train PINN on GMAT data
     print(f"  Training PINN on first {TRAIN_FRAC*100:.0f}% of GMAT data...")
     pinn_pred_km, n_train, model, t_all_tensor, norm = train_pinn_on_gmat(
-        gmat_data, a_km
+        gmat_data, a_km, long_arc=long_arc, cd_a_over_m=cd_a_over_m,
     )
 
     # 2. Propagate SGP4 from same epoch
