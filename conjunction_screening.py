@@ -20,8 +20,8 @@ Key demonstration:
 
 Outputs
 -------
-    figures/conjunction_screening.png  -- 4-panel summary figure
-    figures/conjunction_table.txt      -- timing and detection summary
+    figures/conjunction_screening.png  -- 6-panel summary figure
+    figures/conjunction_table.txt      -- timing, detection, and MC Dropout summary
 """
 
 import os
@@ -55,6 +55,52 @@ os.makedirs(FIGURES_DIR, exist_ok=True)
 
 torch.manual_seed(42)
 np.random.seed(42)
+
+MC_SAMPLES   = 50          # MC Dropout forward passes
+DROPOUT_P    = 0.1          # dropout probability for MC mode
+R_COMBINED   = 0.010        # combined hard-body radius (km) -- ~10 m
+
+# ── Chan (2008) collision probability ─────────────────────────────────────────
+def collision_probability_chan2008(pos_A, pos_B, cov_A, cov_B, r_combined):
+    """Short-encounter collision probability (Chan 2008, Eq. 3).
+
+    Parameters
+    ----------
+    pos_A, pos_B : (3,) arrays -- positions at TCA (km)
+    cov_A, cov_B : (3,3) arrays -- 3D position covariance (km^2)
+    r_combined   : float -- combined hard-body radius (km)
+
+    Returns
+    -------
+    Pc : float -- collision probability
+    """
+    dr = pos_A - pos_B                          # relative position (3,)
+    C = cov_A + cov_B                           # combined covariance (3,3)
+    miss = np.linalg.norm(dr)
+    if miss < 1e-12:
+        return 1.0
+
+    # Build encounter-plane basis perpendicular to miss vector
+    e_miss = dr / miss
+    # Find a vector not parallel to e_miss
+    seed = np.array([1.0, 0.0, 0.0]) if abs(e_miss[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    e1 = np.cross(e_miss, seed)
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(e_miss, e1)
+    P = np.column_stack([e1, e2])               # (3, 2) projection matrix
+
+    # Project to 2D encounter plane
+    dr_2d = P.T @ dr                            # (2,)
+    C_2d = P.T @ C @ P                          # (2, 2)
+
+    det_C = np.linalg.det(C_2d)
+    if det_C < 1e-30:
+        return 0.0
+
+    C_inv = np.linalg.inv(C_2d)
+    maha = float(dr_2d @ C_inv @ dr_2d)
+    Pc = (r_combined**2 / (2.0 * np.sqrt(det_C))) * np.exp(-0.5 * maha)
+    return float(np.clip(Pc, 0.0, 1.0))
 
 # ── Load PINN ─────────────────────────────────────────────────────────────────
 # Uses FourierPINN from src/models.py (N_FREQ=8, secular drift head).
@@ -219,8 +265,66 @@ for N_test in [100, 500, 1000, 2000]:
     ratio = t_bf / t_kd if t_kd > 0.01 else float("inf")
     print(f"  N={N_test:>5}: Brute={t_bf:>8.1f} ms  KD-tree={t_kd:>8.1f} ms  ({ratio:.1f}x)")
 
+# ── MC Dropout Uncertainty Quantification ─────────────────────────────────────
+# NOTE: The PINN was trained WITHOUT dropout.  Applying dropout at inference
+# gives an *approximate* posterior that is illustrative, not calibrated.  A
+# production system would retrain with dropout enabled.
+
+print("\n-- MC Dropout uncertainty quantification --")
+mc_model = FourierPINN(dropout_p=DROPOUT_P).double()
+mc_model.load_state_dict(sd, strict=False)
+mc_model.eval()          # batchnorm/etc in eval; F.dropout overrides per-pass
+mc_model.enable_dropout()
+
+# Group conjunction events by (sat_A, sat_B) and find TCA (time of closest approach)
+from collections import defaultdict
+pair_events = defaultdict(list)
+for (iA, iB, t_idx) in conj_events:
+    pair_events[(iA, iB)].append(t_idx)
+
+conj_results = []   # will hold dicts for each pair
+for (iA, iB), t_indices in sorted(pair_events.items()):
+    # TCA = timestep with minimum distance for this pair
+    dists_at_times = np.array([
+        np.linalg.norm(pos_A_pinn[iA, ti] - pos_B[iB, ti]) for ti in t_indices
+    ])
+    tca_idx = t_indices[np.argmin(dists_at_times)]
+    miss_km = float(np.min(dists_at_times))
+
+    # MC forward for satellite A at TCA
+    t_query_A = t_vec[tca_idx] + phi_A[iA] / n_A   # seconds
+    t_norm_val = t_query_A / norm_A.t_ref
+    t_mc = torch.tensor([[t_norm_val]], dtype=torch.float64)
+
+    with torch.no_grad():
+        samples = mc_model.mc_forward(t_mc, n_mc=MC_SAMPLES)  # (MC, 1, 3)
+    samples_km = samples[:, 0, :].numpy() * norm_A.r_ref       # (MC, 3) km
+
+    cov_A = np.cov(samples_km.T)                                # (3, 3)
+    sigma_xyz = np.sqrt(np.diag(cov_A))                         # per-axis 1-sigma
+
+    # Catalog B is analytical -> zero covariance
+    cov_B = np.zeros((3, 3))
+
+    Pc = collision_probability_chan2008(
+        pos_A_pinn[iA, tca_idx], pos_B[iB, tca_idx],
+        cov_A, cov_B, R_COMBINED
+    )
+
+    conj_results.append({
+        "iA": iA, "iB": iB, "tca_idx": tca_idx,
+        "miss_km": miss_km, "sigma": sigma_xyz, "Pc": Pc, "cov_A": cov_A,
+    })
+
+mc_model.disable_dropout()
+
+print(f"  Evaluated {len(conj_results)} conjunction pairs with MC Dropout (n_mc={MC_SAMPLES})")
+if conj_results:
+    Pc_vals = [r["Pc"] for r in conj_results]
+    print(f"  Pc range: [{min(Pc_vals):.2e}, {max(Pc_vals):.2e}]")
+
 # ── Plots ─────────────────────────────────────────────────────────────────────
-fig, axes = plt.subplots(2, 2, figsize=(14, 11))
+fig, axes = plt.subplots(3, 2, figsize=(14, 16))
 fig.suptitle(
     f"Real-Time LEO Conjunction Screening via Fourier-PINN\n"
     f"({N_A} Catalog-A + {N_B} Catalog-B satellites, 3-orbit window)",
@@ -286,6 +390,44 @@ ax.set_ylabel("Wall-clock time (ms)")
 ax.set_title(f"Timing: {N_A + N_B} Satellites × {N_TIME} Timesteps")
 ax.grid(True, alpha=0.3, axis="y")
 
+# Panel 5: Miss distance vs position 1-sigma (MC Dropout)
+ax = axes[2, 0]
+if conj_results:
+    miss_vals = [r["miss_km"] for r in conj_results]
+    sigma_vals = [np.mean(r["sigma"]) for r in conj_results]
+    ax.scatter(sigma_vals, miss_vals, c="tab:purple", s=30, alpha=0.7, edgecolors="k", lw=0.5)
+    ax.axhline(CONJUNC_KM, color="red", ls="--", lw=1, label=f"Conjunction threshold ({CONJUNC_KM} km)")
+    ax.set_xlabel("Mean position 1-sigma (km)")
+    ax.set_ylabel("Miss distance at TCA (km)")
+    ax.legend(fontsize=8)
+else:
+    ax.text(0.5, 0.5, "No conjunction pairs", transform=ax.transAxes, ha="center")
+ax.set_title("MC Dropout: Miss Distance vs Position Uncertainty")
+ax.grid(True, alpha=0.3)
+
+# Panel 6: Collision probability bar chart (log scale)
+ax = axes[2, 1]
+if conj_results:
+    # Sort by Pc descending for readability
+    sorted_res = sorted(conj_results, key=lambda r: r["Pc"], reverse=True)
+    n_bars = min(20, len(sorted_res))  # show top 20
+    labels = [f"A{r['iA']}-B{r['iB']}" for r in sorted_res[:n_bars]]
+    pc_vals = [max(r["Pc"], 1e-30) for r in sorted_res[:n_bars]]  # floor for log
+    colors = ["tab:red" if p > 1e-4 else "tab:blue" for p in pc_vals]
+    y_pos = np.arange(n_bars)
+    ax.barh(y_pos, pc_vals, color=colors, alpha=0.8, edgecolor="k", lw=0.5)
+    ax.axvline(1e-4, color="red", ls="--", lw=1.5, label="Operational threshold (1e-4)")
+    ax.set_xscale("log")
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(labels, fontsize=7)
+    ax.set_xlabel("Collision Probability (Pc)")
+    ax.legend(fontsize=8, loc="lower right")
+    ax.invert_yaxis()
+else:
+    ax.text(0.5, 0.5, "No conjunction pairs", transform=ax.transAxes, ha="center")
+ax.set_title("Chan (2008) Collision Probability via MC Dropout")
+ax.grid(True, alpha=0.3, axis="x")
+
 plt.tight_layout()
 out_png = os.path.join(FIGURES_DIR, "conjunction_screening.png")
 fig.savefig(out_png, dpi=150, bbox_inches="tight")
@@ -310,7 +452,8 @@ with open(table_path, "w") as f:
     if t_kdtree_ms > 0.01:
         f.write(f"{'KD-tree vs brute-force':<40}  {t_brute_ms/t_kdtree_ms:>14.1f} x\n")
     f.write(f"{'Pairs screened':<40}  {N_A*N_B:>18,}\n")
-    f.write(f"{'Conjunctions (< {CONJUNC_KM} km)':<40}  {n_conjunctions:>18}\n")
+    conj_label = f"Conjunctions (< {CONJUNC_KM} km)"
+    f.write(f"{conj_label:<40}  {n_conjunctions:>18}\n")
     f.write(f"{'Close-approach events':<40}  {len(conj_events):>18,}\n")
     f.write(f"{'Closest approach':<40}  {overall_min:>15.2f} km\n")
     f.write(f"{'PINN mean error vs ODE':<40}  {mean_err:>15.2f} km\n")
@@ -323,6 +466,26 @@ with open(table_path, "w") as f:
     for N_s, t_bf, t_kd in scale_results:
         ratio = t_bf / t_kd if t_kd > 0.01 else float("inf")
         f.write(f"{N_s:<15} {t_bf:>13.1f} ms {t_kd:>13.1f} ms {ratio:>10.1f} x\n")
+    f.write("=" * 64 + "\n\n")
+
+    # MC Dropout results
+    f.write("MC Dropout Uncertainty Quantification\n")
+    f.write(f"(n_mc={MC_SAMPLES}, dropout_p={DROPOUT_P}, r_combined={R_COMBINED*1000:.0f} m)\n")
+    f.write("-" * 64 + "\n")
+    f.write("NOTE: Model was trained WITHOUT dropout. These uncertainty\n")
+    f.write("estimates are illustrative, not calibrated.\n\n")
+    if conj_results:
+        f.write(f"{'Pair':<12} {'Miss (km)':>10} {'sigma_x':>10} {'sigma_y':>10} {'sigma_z':>10} {'Pc':>12}\n")
+        f.write("-" * 64 + "\n")
+        for r in sorted(conj_results, key=lambda x: x["Pc"], reverse=True):
+            f.write(f"A{r['iA']:<3}-B{r['iB']:<3}  "
+                    f"{r['miss_km']:>10.3f} "
+                    f"{r['sigma'][0]:>10.4f} "
+                    f"{r['sigma'][1]:>10.4f} "
+                    f"{r['sigma'][2]:>10.4f} "
+                    f"{r['Pc']:>12.2e}\n")
+    else:
+        f.write("  No conjunction pairs found.\n")
     f.write("=" * 64 + "\n")
 print(f"Saved: {table_path}")
 print("\nDone.")
