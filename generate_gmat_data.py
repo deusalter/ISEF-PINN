@@ -61,6 +61,10 @@ N_POINTS = 5000          # output points (matches SGP4 pipeline)
 N_ORBITS = 5             # propagation duration in orbital periods
 GMAT_STEP_SEC = 10.0     # GMAT output cadence (seconds)
 
+# Long-arc (7-day) settings
+N_POINTS_LONG = 50000    # 10x more points for 10x longer arc
+LONG_ARC_DAYS = 7        # propagation duration in days
+
 
 # ---------------------------------------------------------------------------
 # TLE epoch parsing
@@ -160,6 +164,8 @@ def generate_gmat_script(
     a_km: float,
     ecc: float,
     cd_a_over_m: float = 0.022,
+    prop_duration_override: float = None,
+    script_suffix: str = "",
 ) -> Path:
     """Generate a GMAT .script file for high-fidelity propagation.
 
@@ -193,7 +199,7 @@ def generate_gmat_script(
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     epoch_str = _datetime_to_gmat_epoch(epoch_dt)
-    prop_duration = N_ORBITS * period_s  # total propagation time [s]
+    prop_duration = prop_duration_override if prop_duration_override else N_ORBITS * period_s
     report_step = GMAT_STEP_SEC
 
     # Satellite area and mass from Cd*A/m
@@ -207,7 +213,7 @@ def generate_gmat_script(
     cr = 1.8  # coefficient of reflectivity (typical)
     srp_area_m2 = area_m2  # assume same area for SRP
 
-    report_path = OUTPUT_DIR / f"{norad_id}_gmat_report.txt"
+    report_path = OUTPUT_DIR / f"{norad_id}{script_suffix}_gmat_report.txt"
 
     script = f"""%----------------------------------------
 % GMAT High-Fidelity Propagation Script
@@ -268,7 +274,7 @@ BeginMissionSequence;
 Propagate HighFidelityProp(Sat) {{Sat.ElapsedSecs = {prop_duration:.2f}}};
 """
 
-    script_path = SCRIPT_DIR / f"{norad_id}.script"
+    script_path = SCRIPT_DIR / f"{norad_id}{script_suffix}.script"
     script_path.write_text(script)
 
     return script_path
@@ -396,6 +402,7 @@ def process_satellite(
     name: str,
     cd_a_over_m: float = 0.022,
     dry_run: bool = False,
+    long_arc: bool = False,
 ) -> bool:
     """Generate GMAT data for a single satellite.
 
@@ -435,6 +442,14 @@ def process_satellite(
     pos_j2000, vel_j2000 = teme_to_j2000(pos_teme, vel_teme, epoch_dt)
 
     # 4. Generate GMAT script
+    prop_dur = None
+    script_suffix = ""
+    n_out_points = N_POINTS
+    if long_arc:
+        prop_dur = LONG_ARC_DAYS * 86400.0
+        script_suffix = "_7day"
+        n_out_points = N_POINTS_LONG
+
     script_path = generate_gmat_script(
         norad_id=norad_id,
         name=name,
@@ -445,6 +460,8 @@ def process_satellite(
         a_km=a_km,
         ecc=ecc,
         cd_a_over_m=cd_a_over_m,
+        prop_duration_override=prop_dur,
+        script_suffix=script_suffix,
     )
 
     print(f"  Script: {script_path}")
@@ -458,7 +475,7 @@ def process_satellite(
 
     # 5. Run GMAT
     print("  Running GMAT...", end="", flush=True)
-    report_path = OUTPUT_DIR / f"{norad_id}_gmat_report.txt"
+    report_path = OUTPUT_DIR / f"{norad_id}{script_suffix}_gmat_report.txt"
 
     if not run_gmat_script(script_path):
         return False
@@ -476,14 +493,15 @@ def process_satellite(
 
     print(f" done ({raw_data.shape[0]} raw points)")
 
-    # 7. Resample to 5000 points
-    data = resample_trajectory(raw_data, N_POINTS)
+    # 7. Resample
+    data = resample_trajectory(raw_data, n_out_points)
 
     # 8. Save .npy
-    npy_path = OUTPUT_DIR / f"{norad_id}.npy"
+    npy_path = OUTPUT_DIR / f"{norad_id}{script_suffix}.npy"
     np.save(str(npy_path), data)
 
     # 9. Save metadata
+    n_orbits_actual = int(prop_dur / period_s) if prop_dur else N_ORBITS
     meta = {
         "norad_id": norad_id,
         "name": name,
@@ -491,8 +509,8 @@ def process_satellite(
         "inc_deg": float(inc_deg),
         "ecc": float(ecc),
         "period_s": float(period_s),
-        "n_orbits": N_ORBITS,
-        "n_points": N_POINTS,
+        "n_orbits": n_orbits_actual,
+        "n_points": n_out_points,
         "data_source": "GMAT",
         "force_model": {
             "gravity": "JGM-2 20x20",
@@ -507,7 +525,7 @@ def process_satellite(
         "cd_a_over_m": cd_a_over_m,
         "raw_gmat_points": int(raw_data.shape[0]),
     }
-    meta_path = OUTPUT_DIR / f"{norad_id}_meta.json"
+    meta_path = OUTPUT_DIR / f"{norad_id}{script_suffix}_meta.json" if script_suffix else OUTPUT_DIR / f"{norad_id}_meta.json"
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)
 
@@ -543,6 +561,10 @@ def main():
         "--validate", action="store_true",
         help="Validate GMAT installation and exit"
     )
+    parser.add_argument(
+        "--long-arc", action="store_true",
+        help="Generate 7-day trajectories (default: 5-orbit)"
+    )
     args = parser.parse_args()
 
     print("=" * 70)
@@ -567,6 +589,7 @@ def main():
 
     print(f"\n  Satellites: {len(satellites)}")
     print(f"  Output dir: {OUTPUT_DIR}")
+    print(f"  Mode:       {'7-day long-arc' if args.long_arc else '5-orbit'}")
     print(f"  Dry run:    {args.dry_run}")
     if not args.dry_run:
         try:
@@ -593,6 +616,7 @@ def main():
             name=sat.name,
             cd_a_over_m=sat.cd_a_over_m,
             dry_run=args.dry_run,
+            long_arc=args.long_arc,
         )
 
         if ok:

@@ -21,6 +21,7 @@ After all satellites:
 Usage:
   python compare_pinn_vs_sgp4.py               # full catalog
   python compare_pinn_vs_sgp4.py --sat 25544   # single satellite
+  python compare_pinn_vs_sgp4.py --long-arc    # use 7-day GMAT data
 """
 
 import argparse
@@ -28,6 +29,7 @@ import json
 import math
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -292,7 +294,7 @@ def train_pinn_on_gmat(data, a_km):
     with torch.no_grad():
         pinn_pred_km = model(t_all).cpu().numpy() * norm.r_ref
 
-    return pinn_pred_km, n_train
+    return pinn_pred_km, n_train, model, t_all, norm
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +347,8 @@ def propagate_sgp4_j2000(line1, line2, t_seconds, epoch_dt):
 # ---------------------------------------------------------------------------
 # Per-satellite comparison
 # ---------------------------------------------------------------------------
-def compare_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022):
+def compare_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022,
+                      long_arc=False):
     """Run PINN vs SGP4 comparison for one satellite against GMAT truth.
 
     Returns
@@ -353,7 +356,8 @@ def compare_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022):
     dict or None
         Per-satellite results, or None if data unavailable.
     """
-    data_path = f"data/gmat_orbits/{norad_id}.npy"
+    suffix = "_7day" if long_arc else ""
+    data_path = f"data/gmat_orbits/{norad_id}{suffix}.npy"
     meta_path = f"data/gmat_orbits/{norad_id}_meta.json"
 
     if not os.path.exists(data_path):
@@ -391,7 +395,9 @@ def compare_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022):
 
     # 1. Train PINN on GMAT data
     print(f"  Training PINN on first {TRAIN_FRAC*100:.0f}% of GMAT data...")
-    pinn_pred_km, n_train = train_pinn_on_gmat(gmat_data, a_km)
+    pinn_pred_km, n_train, model, t_all_tensor, norm = train_pinn_on_gmat(
+        gmat_data, a_km
+    )
 
     # 2. Propagate SGP4 from same epoch
     print(f"  Propagating SGP4...")
@@ -412,8 +418,67 @@ def compare_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022):
     pinn_full_rmse = float(np.sqrt(np.mean(pinn_err ** 2)))
     sgp4_full_rmse = float(np.sqrt(np.mean(sgp4_err ** 2)))
 
+    # --- Max Position Error (test region) ---
+    pinn_max_err = float(np.max(pinn_err[n_train:]))
+    sgp4_max_err = float(np.max(sgp4_err[n_train:]))
+
+    # --- Inference Time ---
+    # PINN: time a forward pass on the full dataset
+    model.eval()
+    n_timing_runs = 10
+    with torch.no_grad():
+        _ = model(t_all_tensor)  # warm-up
+    pinn_times = []
+    for _ in range(n_timing_runs):
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            _ = model(t_all_tensor)
+        pinn_times.append((time.perf_counter() - t0) * 1e3)
+    pinn_inference_ms = float(np.median(pinn_times))
+
+    # SGP4: time propagation of all points
+    sat_sgp4 = Satrec.twoline2rv(line1, line2)
+    N_pts = len(t_seconds)
+    jd_array = np.full(N_pts, sat_sgp4.jdsatepoch)
+    fr_array = sat_sgp4.jdsatepochF + t_seconds / 86400.0
+    _ = sat_sgp4.sgp4_array(jd_array, fr_array)  # warm-up
+    sgp4_times = []
+    for _ in range(n_timing_runs):
+        sat_sgp4 = Satrec.twoline2rv(line1, line2)
+        jd_array = np.full(N_pts, sat_sgp4.jdsatepoch)
+        fr_array = sat_sgp4.jdsatepochF + t_seconds / 86400.0
+        t0 = time.perf_counter()
+        _ = sat_sgp4.sgp4_array(jd_array, fr_array)
+        sgp4_times.append((time.perf_counter() - t0) * 1e3)
+    sgp4_inference_ms = float(np.median(sgp4_times))
+
+    # GMAT: report execution time from metadata (not real-time runnable)
+    gmat_inference_ms = meta.get("gmat_runtime_ms", None)
+
+    # --- Max Energy Drift ---
+    # Specific orbital energy: E = v^2/2 - mu/r
+    # Approximate velocity via finite differences on the GMAT time grid
+    dt = float(t_seconds[1] - t_seconds[0])
+
+    def _energy_drift(pos_km_arr):
+        vel = np.diff(pos_km_arr, axis=0) / dt  # (N-1, 3)
+        v2 = np.sum(vel ** 2, axis=1)
+        r = np.linalg.norm(pos_km_arr[:-1], axis=1)
+        energy = 0.5 * v2 - MU / r
+        return float(np.max(np.abs(energy - energy[0])))
+
+    pinn_energy_drift = _energy_drift(pinn_pred_km)
+    sgp4_energy_drift = _energy_drift(sgp4_pos_km)
+    gmat_energy_drift = _energy_drift(gmat_pos_km)
+
     print(f"  PINN test RMSE:  {pinn_test_rmse:.2f} km")
     print(f"  SGP4 test RMSE:  {sgp4_test_rmse:.2f} km")
+    print(f"  PINN max error:  {pinn_max_err:.2f} km")
+    print(f"  SGP4 max error:  {sgp4_max_err:.2f} km")
+    print(f"  PINN inference:  {pinn_inference_ms:.2f} ms")
+    print(f"  SGP4 inference:  {sgp4_inference_ms:.2f} ms")
+    print(f"  Energy drift  PINN={pinn_energy_drift:.2e}  "
+          f"SGP4={sgp4_energy_drift:.2e}  GMAT={gmat_energy_drift:.2e}")
 
     improvement = (sgp4_test_rmse - pinn_test_rmse) / sgp4_test_rmse * 100 \
         if sgp4_test_rmse > 0 else 0.0
@@ -432,12 +497,21 @@ def compare_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022):
         "sgp4_train_rmse_km": round(sgp4_train_rmse, 4),
         "pinn_full_rmse_km": round(pinn_full_rmse, 4),
         "sgp4_full_rmse_km": round(sgp4_full_rmse, 4),
+        "pinn_max_err_km": round(pinn_max_err, 4),
+        "sgp4_max_err_km": round(sgp4_max_err, 4),
+        "pinn_inference_ms": round(pinn_inference_ms, 2),
+        "sgp4_inference_ms": round(sgp4_inference_ms, 2),
+        "gmat_inference_ms": gmat_inference_ms,
+        "pinn_energy_drift": pinn_energy_drift,
+        "sgp4_energy_drift": sgp4_energy_drift,
+        "gmat_energy_drift": gmat_energy_drift,
         "pinn_improvement_over_sgp4_pct": round(improvement, 2),
     }
 
     # Save per-satellite result
     os.makedirs("data/gmat_results", exist_ok=True)
-    result_path = f"data/gmat_results/{norad_id}_comparison.json"
+    result_suffix = "_comparison_7day" if long_arc else "_comparison"
+    result_path = f"data/gmat_results/{norad_id}{result_suffix}.json"
     with open(result_path, "w") as f:
         json.dump(result, f, indent=2)
 
@@ -529,6 +603,10 @@ def main():
         "--sat", type=int, default=None,
         help="NORAD ID for single-satellite test"
     )
+    parser.add_argument(
+        "--long-arc", action="store_true",
+        help="Use 7-day GMAT data (*_7day.npy) instead of 5-orbit data"
+    )
     args = parser.parse_args()
 
     print("=" * 70)
@@ -546,8 +624,10 @@ def main():
     else:
         satellites = get_catalog()
 
+    arc_label = "7-day" if args.long_arc else "5-orbit"
     print(f"  Satellites: {len(satellites)}")
-    print(f"  Train fraction: {TRAIN_FRAC*100:.0f}% (~1 orbit)")
+    print(f"  Data: {arc_label} GMAT trajectories")
+    print(f"  Train fraction: {TRAIN_FRAC*100:.0f}%")
 
     all_results = []
 
@@ -559,6 +639,7 @@ def main():
         result = compare_satellite(
             sat.norad_id, sat.name, sat.orbit_type,
             cd_a_over_m=sat.cd_a_over_m,
+            long_arc=args.long_arc,
         )
 
         if result is not None:
@@ -619,6 +700,37 @@ def main():
               f"{r['sgp4_test_rmse_km']:>8.2f}km  "
               f"{r['pinn_improvement_over_sgp4_pct']:>+7.1f}%")
 
+    # --- ISEF Results Table ---
+    pinn_max_errs = np.array([r["pinn_max_err_km"] for r in all_results])
+    sgp4_max_errs = np.array([r["sgp4_max_err_km"] for r in all_results])
+    pinn_inf_ms = np.array([r["pinn_inference_ms"] for r in all_results])
+    sgp4_inf_ms = np.array([r["sgp4_inference_ms"] for r in all_results])
+    pinn_edrift = np.array([r["pinn_energy_drift"] for r in all_results])
+    sgp4_edrift = np.array([r["sgp4_energy_drift"] for r in all_results])
+    gmat_edrift = np.array([r["gmat_energy_drift"] for r in all_results])
+
+    print(f"\n\n{'=' * 70}")
+    print("  ISEF RESULTS TABLE  (N={} satellite average)".format(len(all_results)))
+    print(f"{'=' * 70}")
+    print(f"\n  {'Metric':<30s}  {'SGP4':>12s}  {'PINN':>12s}  {'GMAT':>12s}")
+    print(f"  {'-'*30}  {'-'*12}  {'-'*12}  {'-'*12}")
+    print(f"  {'Position RMSE (km)':<30s}  "
+          f"{np.mean(sgp4_rmses):>12.2f}  "
+          f"{np.mean(pinn_rmses):>12.2f}  "
+          f"{'0.00':>12s}")
+    print(f"  {'Max Position Error (km)':<30s}  "
+          f"{np.mean(sgp4_max_errs):>12.2f}  "
+          f"{np.mean(pinn_max_errs):>12.2f}  "
+          f"{'0.00':>12s}")
+    print(f"  {'Inference Time (ms)':<30s}  "
+          f"{np.mean(sgp4_inf_ms):>12.2f}  "
+          f"{np.mean(pinn_inf_ms):>12.2f}  "
+          f"{'N/A':>12s}")
+    print(f"  {'Max Energy Drift (km²/s²)':<30s}  "
+          f"{np.mean(sgp4_edrift):>12.2e}  "
+          f"{np.mean(pinn_edrift):>12.2e}  "
+          f"{np.mean(gmat_edrift):>12.2e}")
+
     # Wilcoxon signed-rank test (non-parametric alternative)
     if len(all_results) >= 6:
         w_stat, w_p = stats.wilcoxon(differences, alternative="less")
@@ -638,6 +750,13 @@ def main():
         "pinn_mean_rmse_km": round(float(np.mean(pinn_rmses)), 4),
         "sgp4_mean_rmse_km": round(float(np.mean(sgp4_rmses)), 4),
         "mean_difference_km": round(float(np.mean(differences)), 4),
+        "pinn_mean_max_err_km": round(float(np.mean(pinn_max_errs)), 4),
+        "sgp4_mean_max_err_km": round(float(np.mean(sgp4_max_errs)), 4),
+        "pinn_mean_inference_ms": round(float(np.mean(pinn_inf_ms)), 2),
+        "sgp4_mean_inference_ms": round(float(np.mean(sgp4_inf_ms)), 2),
+        "pinn_mean_energy_drift": float(np.mean(pinn_edrift)),
+        "sgp4_mean_energy_drift": float(np.mean(sgp4_edrift)),
+        "gmat_mean_energy_drift": float(np.mean(gmat_edrift)),
         "t_statistic": round(float(t_stat), 4),
         "p_value_one_sided": float(p_one),
         "cohens_d": round(float(cohens_d), 4),
@@ -646,7 +765,8 @@ def main():
     }
 
     os.makedirs("data/gmat_results", exist_ok=True)
-    summary_path = "data/gmat_results/hypothesis_test_summary.json"
+    suffix = "_7day" if args.long_arc else ""
+    summary_path = f"data/gmat_results/hypothesis_test_summary{suffix}.json"
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"\n  Summary saved -> {summary_path}")
