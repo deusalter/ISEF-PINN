@@ -236,21 +236,47 @@ def teme_to_j2000_batch(positions_teme, velocities_teme, epoch_dt):
     velocities_j2000 : np.ndarray, shape (N, 3)
         Velocities in J2000 frame [km/s].
     """
-    N = positions_teme.shape[0]
-    pos_out = np.empty_like(positions_teme)
-    vel_out = np.empty_like(velocities_teme)
+    # Try astropy vectorized conversion (handles precession + nutation)
+    try:
+        from astropy.coordinates import (
+            TEME, GCRS, CartesianRepresentation, CartesianDifferential,
+        )
+        from astropy.time import Time
+        import astropy.units as u
 
-    # For short arcs, the TEME->J2000 rotation is essentially constant,
-    # so we compute it once and apply as a batch matrix multiply.
-    # (The rotation changes by <0.001 arcsec over a few hours.)
-    p0, v0 = teme_to_j2000(
-        positions_teme[0], velocities_teme[0], epoch_dt
-    )
+        t = Time(epoch_dt, scale="utc")
 
-    # Determine the rotation matrix from the first point
-    # R @ pos_teme[0] = pos_j2000[0]
-    # For a pure rotation, R = pos_j2000 x pos_teme^T / |...|
-    # But simpler: just recompute the rotation matrix directly
+        teme_pos = CartesianRepresentation(
+            positions_teme[:, 0] * u.km,
+            positions_teme[:, 1] * u.km,
+            positions_teme[:, 2] * u.km,
+        )
+        teme_vel = CartesianDifferential(
+            velocities_teme[:, 0] * u.km / u.s,
+            velocities_teme[:, 1] * u.km / u.s,
+            velocities_teme[:, 2] * u.km / u.s,
+        )
+
+        teme_coord = TEME(
+            teme_pos.with_differentials(teme_vel), obstime=t,
+        )
+        gcrs = teme_coord.transform_to(GCRS(obstime=t))
+
+        pos_j2000 = np.column_stack([
+            gcrs.cartesian.x.to(u.km).value,
+            gcrs.cartesian.y.to(u.km).value,
+            gcrs.cartesian.z.to(u.km).value,
+        ])
+        vel_j2000 = np.column_stack([
+            gcrs.cartesian.differentials["s"].d_x.to(u.km / u.s).value,
+            gcrs.cartesian.differentials["s"].d_y.to(u.km / u.s).value,
+            gcrs.cartesian.differentials["s"].d_z.to(u.km / u.s).value,
+        ])
+        return pos_j2000, vel_j2000
+    except Exception:
+        pass
+
+    # Fallback: simplified equation-of-equinoxes rotation
     eq_eq = _equation_of_equinoxes(epoch_dt)
     c = math.cos(-eq_eq)
     s = math.sin(-eq_eq)
@@ -260,33 +286,8 @@ def teme_to_j2000_batch(positions_teme, velocities_teme, epoch_dt):
         [0.0, 0.0, 1.0],
     ])
 
-    # Check if astropy is available for the rotation matrix
-    try:
-        result = _try_astropy_conversion(
-            positions_teme[0], velocities_teme[0], epoch_dt
-        )
-        if result is not None:
-            # Derive rotation from astropy result
-            p_teme = positions_teme[0]
-            p_j2000 = result[0]
-            # For small angles, the rotation is well-conditioned
-            # Use the full 3-point method for robustness
-            pos_out = (R @ positions_teme.T).T
-            vel_out = (R @ velocities_teme.T).T
-            # Correct using astropy offset for first point
-            correction = result[0] - pos_out[0]
-            if np.linalg.norm(correction) < 1.0:  # sanity check (<1 km)
-                pos_out += correction
-                vel_correction = result[1] - vel_out[0]
-                vel_out += vel_correction
-            return pos_out, vel_out
-    except Exception:
-        pass
-
-    # Fallback: apply rotation matrix to all points
     pos_out = (R @ positions_teme.T).T
     vel_out = (R @ velocities_teme.T).T
-
     return pos_out, vel_out
 
 
