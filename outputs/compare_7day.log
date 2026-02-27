@@ -1,0 +1,16 @@
+======================================================================
+  PINN vs SGP4 Hypothesis Test (GMAT Ground Truth)
+======================================================================
+
+  Device: cuda
+  Satellites: 20
+  Data: 7-day (Neural ODE) GMAT trajectories
+  Train fraction: 20%
+
+======================================================================
+  [1/20] CBERS 04A (NORAD 44883)
+======================================================================
+  7-day data: 50000 pts, span=168.0h (7.0 days)
+  Training Neural ODE on first 20% of data...
+    Neural ODE: 1380 NN parameters, dt=120.0s, 8 segments
+    Training: 10000 pts, 7 segments, ~1250 pts/seg

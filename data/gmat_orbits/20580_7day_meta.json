@@ -1,0 +1,27 @@
+{
+  "norad_id": 20580,
+  "name": "HUBBLE (HST)",
+  "a_km": 6917.085787080983,
+  "inc_deg": 28.470000000000002,
+  "ecc": 0.00028,
+  "period_s": 5725.266715260751,
+  "n_orbits": 105,
+  "n_points": 50000,
+  "data_source": "GMAT",
+  "force_model": {
+    "gravity": "JGM-2 20x20",
+    "drag": "MSISE-90",
+    "srp": true,
+    "third_body": [
+      "Sun",
+      "Luna"
+    ],
+    "integrator": "RungeKutta89",
+    "accuracy": 1e-12
+  },
+  "epoch_utc": "2024-01-01T12:00:00",
+  "frame": "EarthMJ2000Eq",
+  "cd_a_over_m": 0.01,
+  "raw_gmat_points": 9553,
+  "gmat_runtime_ms": 3240.4
+}

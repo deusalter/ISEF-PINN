@@ -1,0 +1,26 @@
+{
+  "norad_id": 36508,
+  "name": "COSMOS 2251 DEB",
+  "a_km": 7230.6728124863175,
+  "inc_deg": 74.04,
+  "ecc": 0.01,
+  "period_s": 6118.980169971672,
+  "n_orbits": 5,
+  "n_points": 5000,
+  "data_source": "GMAT",
+  "force_model": {
+    "gravity": "JGM-2 20x20",
+    "drag": "MSISE-90",
+    "srp": true,
+    "third_body": [
+      "Sun",
+      "Luna"
+    ],
+    "integrator": "RungeKutta89",
+    "accuracy": 1e-12
+  },
+  "epoch_utc": "2024-01-01T12:00:00",
+  "frame": "EarthMJ2000Eq",
+  "cd_a_over_m": 0.04,
+  "raw_gmat_points": 468
+}

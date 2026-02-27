@@ -1,0 +1,476 @@
+======================================================================
+  PINN vs SGP4 Hypothesis Test (GMAT Ground Truth)
+======================================================================
+
+  Device: cpu
+  Satellites: 20
+  Data: 5-orbit GMAT trajectories
+  Train fraction: 20%
+
+======================================================================
+  [1/20] CBERS 04A (NORAD 44883)
+======================================================================
+  GMAT data: 5000 pts, span=8.1h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=6.5270e-07  best_test=928.9km
+    PINN ep=5000/15000  d=4.4363e-07  best_test=9.5km
+    PINN ep=7500/15000  d=4.3246e-07  best_test=4.1km
+    PINN ep=10000/15000  d=6.5999e-08  best_test=2.3km
+    PINN ep=12500/15000  d=5.1749e-07  best_test=2.1km
+    PINN ep=15000/15000  d=2.0886e-11  best_test=0.8km
+  Propagating SGP4...
+  PINN test RMSE:  0.82 km
+  SGP4 test RMSE:  1.16 km
+  PINN max error:  1.69 km
+  SGP4 max error:  2.16 km
+  PINN inference:  1.91 ms
+  SGP4 inference:  1.14 ms
+  Energy drift  PINN=3.08e-02  SGP4=1.77e-02  GMAT=1.82e-02
+
+======================================================================
+  [2/20] TROPICS-01 (NORAD 57320)
+======================================================================
+  GMAT data: 5000 pts, span=8.0h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=6.5576e-07  best_test=875.1km
+    PINN ep=5000/15000  d=4.5123e-06  best_test=7.5km
+    PINN ep=7500/15000  d=1.8673e-07  best_test=4.8km
+    PINN ep=10000/15000  d=3.6425e-07  best_test=4.8km
+    PINN ep=12500/15000  d=1.0137e-06  best_test=3.6km
+    PINN ep=15000/15000  d=2.0853e-11  best_test=1.3km
+  Propagating SGP4...
+  PINN test RMSE:  1.29 km
+  SGP4 test RMSE:  0.48 km
+  PINN max error:  2.81 km
+  SGP4 max error:  0.99 km
+  PINN inference:  1.88 ms
+  SGP4 inference:  1.01 ms
+  Energy drift  PINN=2.65e-02  SGP4=1.98e-02  GMAT=2.04e-02
+
+======================================================================
+  [3/20] TROPICS-02 (NORAD 57321)
+======================================================================
+  GMAT data: 5000 pts, span=8.0h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=6.5406e-07  best_test=876.9km
+    PINN ep=5000/15000  d=4.0469e-07  best_test=6.9km
+    PINN ep=7500/15000  d=6.5697e-07  best_test=6.5km
+    PINN ep=10000/15000  d=2.3470e-09  best_test=2.7km
+    PINN ep=12500/15000  d=7.4064e-07  best_test=2.2km
+    PINN ep=15000/15000  d=2.3479e-11  best_test=1.4km
+  Propagating SGP4...
+  PINN test RMSE:  1.38 km
+  SGP4 test RMSE:  0.48 km
+  PINN max error:  2.90 km
+  SGP4 max error:  1.00 km
+  PINN inference:  1.81 ms
+  SGP4 inference:  0.96 ms
+  Energy drift  PINN=2.74e-02  SGP4=1.98e-02  GMAT=2.04e-02
+
+======================================================================
+  [4/20] ORBCOMM FM-5 (NORAD 25063)
+======================================================================
+  GMAT data: 5000 pts, span=8.4h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=6.0933e-07  best_test=910.6km
+    PINN ep=5000/15000  d=1.2477e-07  best_test=4.5km
+    PINN ep=7500/15000  d=7.4001e-07  best_test=2.5km
+    PINN ep=10000/15000  d=1.9373e-07  best_test=2.5km
+    PINN ep=12500/15000  d=1.0991e-06  best_test=2.5km
+    PINN ep=15000/15000  d=2.5831e-11  best_test=1.4km
+  Propagating SGP4...
+  PINN test RMSE:  1.38 km
+  SGP4 test RMSE:  2.33 km
+  PINN max error:  2.32 km
+  SGP4 max error:  3.51 km
+  PINN inference:  1.90 ms
+  SGP4 inference:  0.96 ms
+  Energy drift  PINN=2.47e-02  SGP4=1.31e-02  GMAT=1.37e-02
+
+======================================================================
+  [5/20] ISS (ZARYA) (NORAD 25544)
+======================================================================
+  GMAT data: 5000 pts, span=7.7h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=5.7403e-07  best_test=889.0km
+    PINN ep=5000/15000  d=2.2823e-08  best_test=3.0km
+    PINN ep=7500/15000  d=2.5467e-07  best_test=2.9km
+    PINN ep=10000/15000  d=3.0106e-09  best_test=1.6km
+    PINN ep=12500/15000  d=6.9074e-07  best_test=1.6km
+    PINN ep=15000/15000  d=8.6221e-11  best_test=1.1km
+  Propagating SGP4...
+  PINN test RMSE:  1.14 km
+  SGP4 test RMSE:  1.37 km
+  PINN max error:  3.30 km
+  SGP4 max error:  3.12 km
+  PINN inference:  1.89 ms
+  SGP4 inference:  1.17 ms
+  Energy drift  PINN=7.09e-02  SGP4=5.20e-02  GMAT=5.30e-02
+
+======================================================================
+  [6/20] TIANHE (CSS) (NORAD 48274)
+======================================================================
+  GMAT data: 5000 pts, span=7.7h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=6.5178e-07  best_test=833.5km
+    PINN ep=5000/15000  d=7.1988e-08  best_test=6.6km
+    PINN ep=7500/15000  d=1.2678e-07  best_test=5.7km
+    PINN ep=10000/15000  d=3.4226e-07  best_test=5.7km
+    PINN ep=12500/15000  d=1.0049e-06  best_test=5.7km
+    PINN ep=15000/15000  d=5.2245e-11  best_test=2.6km
+  Propagating SGP4...
+  PINN test RMSE:  2.60 km
+  SGP4 test RMSE:  1.09 km
+  PINN max error:  5.16 km
+  SGP4 max error:  2.19 km
+  PINN inference:  1.85 ms
+  SGP4 inference:  0.93 ms
+  Energy drift  PINN=4.65e-02  SGP4=3.76e-02  GMAT=3.84e-02
+
+======================================================================
+  [7/20] CYGNUS NG-19 (NORAD 56227)
+======================================================================
+  GMAT data: 5000 pts, span=7.7h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=6.8945e-07  best_test=889.5km
+    PINN ep=5000/15000  d=6.8484e-06  best_test=11.6km
+    PINN ep=7500/15000  d=2.3547e-07  best_test=3.5km
+    PINN ep=10000/15000  d=2.3332e-07  best_test=2.8km
+    PINN ep=12500/15000  d=9.0530e-07  best_test=2.8km
+    PINN ep=15000/15000  d=8.0205e-11  best_test=1.2km
+  Propagating SGP4...
+  PINN test RMSE:  1.23 km
+  SGP4 test RMSE:  1.36 km
+  PINN max error:  3.48 km
+  SGP4 max error:  3.14 km
+  PINN inference:  2.08 ms
+  SGP4 inference:  1.36 ms
+  Energy drift  PINN=7.09e-02  SGP4=5.19e-02  GMAT=5.29e-02
+
+======================================================================
+  [8/20] CREW DRAGON C212 (NORAD 58536)
+======================================================================
+  GMAT data: 5000 pts, span=7.7h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=7.6317e-07  best_test=888.1km
+    PINN ep=5000/15000  d=5.5514e-08  best_test=5.4km
+    PINN ep=7500/15000  d=2.1359e-07  best_test=2.6km
+    PINN ep=10000/15000  d=2.1657e-07  best_test=2.6km
+    PINN ep=12500/15000  d=1.4070e-06  best_test=2.6km
+    PINN ep=15000/15000  d=8.3592e-11  best_test=1.1km
+  Propagating SGP4...
+  PINN test RMSE:  1.11 km
+  SGP4 test RMSE:  0.85 km
+  PINN max error:  2.26 km
+  SGP4 max error:  1.63 km
+  PINN inference:  1.98 ms
+  SGP4 inference:  1.30 ms
+  Energy drift  PINN=7.13e-02  SGP4=5.19e-02  GMAT=5.27e-02
+
+======================================================================
+  [9/20] STARLINK-1007 (NORAD 44713)
+======================================================================
+  GMAT data: 5000 pts, span=8.0h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=6.5787e-07  best_test=862.8km
+    PINN ep=5000/15000  d=1.6784e-06  best_test=11.9km
+    PINN ep=7500/15000  d=5.4193e-07  best_test=2.7km
+    PINN ep=10000/15000  d=1.1956e-07  best_test=2.7km
+    PINN ep=12500/15000  d=1.1216e-06  best_test=2.3km
+    PINN ep=15000/15000  d=9.7199e-11  best_test=1.1km
+  Propagating SGP4...
+  PINN test RMSE:  1.05 km
+  SGP4 test RMSE:  0.48 km
+  PINN max error:  1.87 km
+  SGP4 max error:  0.85 km
+  PINN inference:  1.92 ms
+  SGP4 inference:  1.01 ms
+  Energy drift  PINN=6.59e-02  SGP4=5.09e-02  GMAT=5.14e-02
+
+======================================================================
+  [10/20] STARLINK-1008 (NORAD 44714)
+======================================================================
+  GMAT data: 5000 pts, span=8.0h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=7.9245e-07  best_test=861.7km
+    PINN ep=5000/15000  d=1.3823e-07  best_test=8.0km
+    PINN ep=7500/15000  d=1.1077e-06  best_test=5.1km
+    PINN ep=10000/15000  d=2.6105e-08  best_test=3.6km
+    PINN ep=12500/15000  d=6.7893e-07  best_test=2.0km
+    PINN ep=15000/15000  d=9.3831e-11  best_test=1.2km
+  Propagating SGP4...
+  PINN test RMSE:  1.22 km
+  SGP4 test RMSE:  0.48 km
+  PINN max error:  2.06 km
+  SGP4 max error:  0.86 km
+  PINN inference:  1.82 ms
+  SGP4 inference:  1.02 ms
+  Energy drift  PINN=6.41e-02  SGP4=5.09e-02  GMAT=5.14e-02
+
+======================================================================
+  [11/20] STARLINK-1009 (NORAD 44715)
+======================================================================
+  GMAT data: 5000 pts, span=8.0h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=6.5503e-07  best_test=860.0km
+    PINN ep=5000/15000  d=1.0301e-08  best_test=5.8km
+    PINN ep=7500/15000  d=2.3487e-07  best_test=5.7km
+    PINN ep=10000/15000  d=2.3072e-07  best_test=2.7km
+    PINN ep=12500/15000  d=5.6951e-07  best_test=2.7km
+    PINN ep=15000/15000  d=9.0866e-11  best_test=1.2km
+  Propagating SGP4...
+  PINN test RMSE:  1.19 km
+  SGP4 test RMSE:  0.49 km
+  PINN max error:  2.04 km
+  SGP4 max error:  0.87 km
+  PINN inference:  1.85 ms
+  SGP4 inference:  1.34 ms
+  Energy drift  PINN=6.26e-02  SGP4=5.09e-02  GMAT=5.15e-02
+
+======================================================================
+  [12/20] STARLINK-1010 (NORAD 44716)
+======================================================================
+  GMAT data: 5000 pts, span=8.0h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=1.3649e-06  best_test=858.7km
+    PINN ep=5000/15000  d=5.0193e-07  best_test=4.5km
+    PINN ep=7500/15000  d=6.9910e-07  best_test=4.5km
+    PINN ep=10000/15000  d=1.1761e-06  best_test=3.4km
+    PINN ep=12500/15000  d=9.2628e-07  best_test=2.4km
+    PINN ep=15000/15000  d=9.2692e-11  best_test=1.2km
+  Propagating SGP4...
+  PINN test RMSE:  1.19 km
+  SGP4 test RMSE:  0.50 km
+  PINN max error:  2.04 km
+  SGP4 max error:  0.89 km
+  PINN inference:  1.79 ms
+  SGP4 inference:  1.01 ms
+  Energy drift  PINN=6.58e-02  SGP4=5.09e-02  GMAT=5.15e-02
+
+======================================================================
+  [13/20] LANDSAT 9 (NORAD 49260)
+======================================================================
+  GMAT data: 5000 pts, span=8.2h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=6.8640e-07  best_test=1036.3km
+    PINN ep=5000/15000  d=1.4201e-06  best_test=22.2km
+    PINN ep=7500/15000  d=2.8134e-07  best_test=10.6km
+    PINN ep=10000/15000  d=1.0411e-08  best_test=10.6km
+    PINN ep=12500/15000  d=7.9344e-07  best_test=10.6km
+    PINN ep=15000/15000  d=6.6494e-09  best_test=10.6km
+  Propagating SGP4...
+  PINN test RMSE:  10.63 km
+  SGP4 test RMSE:  1.78 km
+  PINN max error:  23.15 km
+  SGP4 max error:  2.54 km
+  PINN inference:  2.10 ms
+  SGP4 inference:  1.02 ms
+  Energy drift  PINN=2.81e-01  SGP4=7.30e-02  GMAT=7.35e-02
+
+======================================================================
+  [14/20] SENTINEL-6A (NORAD 46984)
+======================================================================
+  GMAT data: 5000 pts, span=8.4h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=5.4868e-07  best_test=969.3km
+    PINN ep=5000/15000  d=2.2978e-07  best_test=6.0km
+    PINN ep=7500/15000  d=4.8947e-07  best_test=3.8km
+    PINN ep=10000/15000  d=1.5270e-07  best_test=3.8km
+    PINN ep=12500/15000  d=4.6259e-06  best_test=3.8km
+    PINN ep=15000/15000  d=4.7029e-10  best_test=3.8km
+  Propagating SGP4...
+  PINN test RMSE:  3.84 km
+  SGP4 test RMSE:  2.66 km
+  PINN max error:  9.00 km
+  SGP4 max error:  4.14 km
+  PINN inference:  1.78 ms
+  SGP4 inference:  1.02 ms
+  Energy drift  PINN=1.48e-01  SGP4=5.97e-02  GMAT=6.04e-02
+
+======================================================================
+  [15/20] NOAA-20 (JPSS-1) (NORAD 43013)
+======================================================================
+  GMAT data: 5000 pts, span=8.5h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=7.1948e-07  best_test=1095.6km
+    PINN ep=5000/15000  d=2.5657e-07  best_test=9.5km
+    PINN ep=7500/15000  d=2.3941e-07  best_test=9.5km
+    PINN ep=10000/15000  d=5.7537e-08  best_test=9.5km
+    PINN ep=12500/15000  d=8.5393e-07  best_test=9.5km
+    PINN ep=15000/15000  d=6.3835e-09  best_test=9.5km
+  Propagating SGP4...
+  PINN test RMSE:  9.51 km
+  SGP4 test RMSE:  1.62 km
+  PINN max error:  22.86 km
+  SGP4 max error:  2.07 km
+  PINN inference:  1.77 ms
+  SGP4 inference:  0.99 ms
+  Energy drift  PINN=8.78e-01  SGP4=6.91e-02  GMAT=6.92e-02
+
+======================================================================
+  [16/20] SUOMI NPP (NORAD 37849)
+======================================================================
+  GMAT data: 5000 pts, span=8.5h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=8.7179e-07  best_test=1097.1km
+    PINN ep=5000/15000  d=1.6434e-06  best_test=10.8km
+    PINN ep=7500/15000  d=7.8215e-07  best_test=9.6km
+    PINN ep=10000/15000  d=4.2240e-09  best_test=9.4km
+    PINN ep=12500/15000  d=8.5846e-07  best_test=9.4km
+    PINN ep=15000/15000  d=6.4096e-09  best_test=9.4km
+  Propagating SGP4...
+  PINN test RMSE:  9.40 km
+  SGP4 test RMSE:  1.37 km
+  PINN max error:  20.03 km
+  SGP4 max error:  1.81 km
+  PINN inference:  1.91 ms
+  SGP4 inference:  0.99 ms
+  Energy drift  PINN=3.00e-01  SGP4=6.91e-02  GMAT=6.93e-02
+
+======================================================================
+  [17/20] HUBBLE (HST) (NORAD 20580)
+======================================================================
+  GMAT data: 5000 pts, span=8.0h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=6.1293e-07  best_test=958.8km
+    PINN ep=5000/15000  d=2.0854e-06  best_test=8.9km
+    PINN ep=7500/15000  d=4.1503e-07  best_test=2.1km
+    PINN ep=10000/15000  d=4.9645e-08  best_test=2.1km
+    PINN ep=12500/15000  d=1.1310e-06  best_test=2.1km
+    PINN ep=15000/15000  d=1.7430e-11  best_test=1.1km
+  Propagating SGP4...
+  PINN test RMSE:  1.05 km
+  SGP4 test RMSE:  0.37 km
+  PINN max error:  2.20 km
+  SGP4 max error:  0.73 km
+  PINN inference:  1.76 ms
+  SGP4 inference:  0.94 ms
+  Energy drift  PINN=2.59e-02  SGP4=1.83e-02  GMAT=1.87e-02
+
+======================================================================
+  [18/20] GRACE-FO 1 (NORAD 43476)
+======================================================================
+  GMAT data: 5000 pts, span=7.9h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=5.5554e-07  best_test=1102.1km
+    PINN ep=5000/15000  d=3.6273e-06  best_test=23.9km
+    PINN ep=7500/15000  d=5.2279e-07  best_test=15.7km
+    PINN ep=10000/15000  d=1.0305e-07  best_test=15.7km
+    PINN ep=12500/15000  d=2.1028e-06  best_test=15.7km
+    PINN ep=15000/15000  d=2.0511e-08  best_test=15.7km
+  Propagating SGP4...
+  PINN test RMSE:  15.70 km
+  SGP4 test RMSE:  2.19 km
+  PINN max error:  37.90 km
+  SGP4 max error:  3.45 km
+  PINN inference:  1.87 ms
+  SGP4 inference:  1.34 ms
+  Energy drift  PINN=3.03e-01  SGP4=8.09e-02  GMAT=8.15e-02
+
+======================================================================
+  [19/20] IRIDIUM 106 (NORAD 43070)
+======================================================================
+  GMAT data: 5000 pts, span=8.4h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=5.4860e-07  best_test=1121.1km
+    PINN ep=5000/15000  d=9.0805e-08  best_test=12.5km
+    PINN ep=7500/15000  d=1.4688e-07  best_test=12.5km
+    PINN ep=10000/15000  d=8.2609e-08  best_test=12.5km
+    PINN ep=12500/15000  d=1.0788e-06  best_test=12.5km
+    PINN ep=15000/15000  d=1.3525e-08  best_test=12.5km
+  Propagating SGP4...
+  PINN test RMSE:  12.53 km
+  SGP4 test RMSE:  1.09 km
+  PINN max error:  30.26 km
+  SGP4 max error:  2.14 km
+  PINN inference:  1.55 ms
+  SGP4 inference:  0.99 ms
+  Energy drift  PINN=4.63e-01  SGP4=7.19e-02  GMAT=7.22e-02
+
+======================================================================
+  [20/20] COSMOS 2251 DEB (NORAD 36508)
+======================================================================
+  GMAT data: 5000 pts, span=8.5h
+  Training PINN on first 20% of GMAT data...
+    PINN ep=2500/15000  d=6.4938e-07  best_test=1059.0km
+    PINN ep=5000/15000  d=2.4857e-06  best_test=15.4km
+    PINN ep=7500/15000  d=1.1069e-06  best_test=6.3km
+    PINN ep=10000/15000  d=5.4448e-08  best_test=6.3km
+    PINN ep=12500/15000  d=1.2732e-06  best_test=6.3km
+    PINN ep=15000/15000  d=2.4164e-09  best_test=6.3km
+  Propagating SGP4...
+  PINN test RMSE:  6.28 km
+  SGP4 test RMSE:  0.65 km
+  PINN max error:  17.51 km
+  SGP4 max error:  1.52 km
+  PINN inference:  1.79 ms
+  SGP4 inference:  1.01 ms
+  Energy drift  PINN=1.48e-01  SGP4=6.57e-02  GMAT=6.58e-02
+
+
+======================================================================
+  AGGREGATE RESULTS
+======================================================================
+
+  N = 20 satellites
+
+  PINN test RMSE:  mean=4.23 km, median=1.33 km, std=4.56 km
+  SGP4 test RMSE:  mean=1.14 km, median=1.09 km, std=0.67 km
+  Difference:      mean=3.09 km (negative = PINN better)
+
+  Paired t-test (H1: PINN RMSE < SGP4 RMSE):
+    t-statistic:   3.1346
+    p-value (1-sided): 9.97e-01
+    Result: NOT SIGNIFICANT (insufficient evidence)
+
+    NORAD  Name                   PINN RMSE   SGP4 RMSE   Improv%
+  -------  --------------------  ----------  ----------  --------
+    44883  CBERS 04A                 0.82km      1.16km    +29.8%
+    57320  TROPICS-01                1.29km      0.48km   -167.7%
+    57321  TROPICS-02                1.38km      0.48km   -184.8%
+    25063  ORBCOMM FM-5              1.38km      2.33km    +41.0%
+    25544  ISS (ZARYA)               1.14km      1.37km    +17.2%
+    48274  TIANHE (CSS)              2.60km      1.09km   -138.4%
+    56227  CYGNUS NG-19              1.23km      1.36km     +9.5%
+    58536  CREW DRAGON C212          1.11km      0.85km    -30.0%
+    44713  STARLINK-1007             1.05km      0.48km   -120.2%
+    44714  STARLINK-1008             1.22km      0.48km   -151.8%
+    44715  STARLINK-1009             1.19km      0.49km   -141.6%
+    44716  STARLINK-1010             1.19km      0.50km   -137.7%
+    49260  LANDSAT 9                10.63km      1.78km   -497.6%
+    46984  SENTINEL-6A               3.84km      2.66km    -44.5%
+    43013  NOAA-20 (JPSS-1)          9.51km      1.62km   -486.5%
+    37849  SUOMI NPP                 9.40km      1.37km   -584.8%
+    20580  HUBBLE (HST)              1.05km      0.37km   -188.1%
+    43476  GRACE-FO 1               15.70km      2.19km   -617.9%
+    43070  IRIDIUM 106              12.53km      1.09km  -1047.0%
+    36508  COSMOS 2251 DEB           6.28km      0.65km   -869.4%
+
+
+======================================================================
+  ISEF RESULTS TABLE  (N=20 satellite average)
+======================================================================
+
+  Metric                                  SGP4          PINN          GMAT
+  ------------------------------  ------------  ------------  ------------
+  Position RMSE (km)                      1.14          4.23          0.00
+  Max Position Error (km)                 1.98          9.74          0.00
+  Inference Time (ms)                     1.08          1.86           N/A
+  Max Energy Drift (km²/s²)           4.88e-02      1.59e-01      4.93e-02
+
+  Wilcoxon signed-rank test (non-parametric):
+    W-statistic: 191.0000
+    p-value:     1.00e+00
+
+  Effect size (Cohen's d): 0.7009
+
+  Summary saved -> data/gmat_results/hypothesis_test_summary.json
+
+  Generating figures...
+  Saved: figures/pinn_vs_sgp4_comparison.png
+  Saved: figures/pinn_vs_sgp4_scatter.png
+  Saved: figures/pinn_improvement_histogram.png
+
+======================================================================
+  Done.
+======================================================================

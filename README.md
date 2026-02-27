@@ -8,8 +8,9 @@ To ensure a rigorous, non-circular comparison, we use NASA's General Mission Ana
 
 Key results across 20 real LEO satellites (5 orbit types):
 - **99.97% average RMSE reduction** over vanilla MLPs (20,967 km -> 5.70 km)
-- **17/20 satellites under 10 km RMSE** with best PINN variant
+- **17/20 satellites under 10 km RMSE** with best PINN variant (5-orbit FourierPINN)
 - **98.2% test RMSE reduction** on J2-perturbed extrapolation (1 orbit training, 4 orbit prediction)
+- **7-day Neural ODE** achieves 6.11 km mean RMSE vs SGP4's 163.77 km (11 satellites validated so far)
 - Atmospheric drag provides marginal improvement over J2-only physics for short-arc propagation
 
 ---
@@ -213,24 +214,31 @@ Same training pipeline as Step 6, but using GMAT trajectories instead of SGP4.
 #### 7d. Run the Hypothesis Test (PINN vs SGP4 vs GMAT)
 
 ```bash
+# 5-orbit comparison (FourierPINN, ~60 min)
 python compare_pinn_vs_sgp4.py
+
+# 7-day comparison (Neural ODE, ~5-7 hours)
+python compare_pinn_vs_sgp4.py --long-arc
+
+# Single satellite test
+python compare_pinn_vs_sgp4.py --long-arc --sat 25544
 ```
 
 For each satellite:
-1. Loads GMAT ground truth
-2. Trains PINN on first 20% of GMAT data (~1 orbit)
+1. Loads GMAT ground truth (5-orbit or 7-day)
+2. Trains PINN on first 20% of GMAT data (FourierPINN for 5-orbit, Neural ODE for 7-day)
 3. Propagates SGP4 from the same epoch (converted to J2000 frame)
 4. Compares both against GMAT truth over the remaining 80%
-5. Paired t-test and Wilcoxon signed-rank test across all 20 satellites
+5. Paired t-test across all 20 satellites
 
 **What it produces:**
-- `data/gmat_results/{norad_id}_comparison.json` -- Per-satellite comparison
+- `data/gmat_results/{norad_id}_comparison[_7day].json` -- Per-satellite comparison
 - `data/gmat_results/hypothesis_test_summary.json` -- Aggregate statistics
 - `figures/pinn_vs_sgp4_comparison.png` -- Bar chart
 - `figures/pinn_vs_sgp4_scatter.png` -- Scatter plot
 - `figures/pinn_improvement_histogram.png` -- Improvement distribution
 
-**Runtime:** ~60 minutes for all 20 satellites
+**Runtime:** ~60 minutes (5-orbit) or ~5-7 hours (7-day) for all 20 satellites
 
 ### Quick Reference: Complete Reproduction in One Block
 
@@ -256,8 +264,10 @@ python analyze_catalog.py
 
 # GMAT ground truth (Step 7, requires GMAT installed)
 python generate_gmat_data.py
+python generate_gmat_data.py --long-arc
 python train_real_orbits.py --data-source gmat
 python compare_pinn_vs_sgp4.py
+python compare_pinn_vs_sgp4.py --long-arc
 ```
 
 ### Expected Runtimes
@@ -275,7 +285,8 @@ python compare_pinn_vs_sgp4.py
 | 6d. Analysis | `analyze_catalog.py` | < 30 seconds |
 | 7b. GMAT data | `generate_gmat_data.py` | 2--5 min/satellite |
 | 7c. GMAT training | `train_real_orbits.py --data-source gmat` | 50--70 minutes |
-| 7d. Hypothesis test | `compare_pinn_vs_sgp4.py` | 50--70 minutes |
+| 7d. Hypothesis test (5-orbit) | `compare_pinn_vs_sgp4.py` | 50--70 minutes |
+| 7d. Hypothesis test (7-day) | `compare_pinn_vs_sgp4.py --long-arc` | 5--7 hours |
 
 Runtimes measured on an Intel Core i7 laptop (no GPU). Apple M-series chips will be near the lower bound. Total wall time for full reproduction (Steps 1--7): approximately 4--5 hours.
 
@@ -313,6 +324,30 @@ The J2 test case uses 20% training (~1 orbit), requiring the network to extrapol
 | **All 20 satellites** | | **20,967** | **5.70** | **5.95** |
 
 **Statistical significance:** The PINN outperforms the vanilla MLP on every single satellite without exception. 17/20 satellites achieve under 10 km test RMSE.
+
+### 7-Day Long-Arc Propagation (Neural ODE)
+
+For long-arc (7-day) propagation, a physics-informed Neural ODE replaces the FourierPINN. The Neural ODE embeds J2-J5 gravitational dynamics directly in the ODE structure and learns a small residual correction (1,380 parameters) for unmodeled perturbations (drag, SRP, third-body effects). Training uses multiple shooting with RK4 integration (dt=60s, 20 segments, 2000 epochs).
+
+Results on 11 validated satellites (20% train = 33.6h, 80% test = 134.4h):
+
+| NORAD | Name | Alt (km) | PINN RMSE (km) | SGP4 RMSE (km) | Improvement |
+|---|---|---|---|---|---|
+| 20580 | HUBBLE (HST) | 540 | 4.44 | 34.22 | +87.0% |
+| 25063 | ORBCOMM FM-5 | 775 | 2.92 | 51.02 | +94.3% |
+| 25544 | ISS (ZARYA) | 420 | 4.55 | 377.74 | +98.8% |
+| 37849 | SUOMI NPP | 824 | 3.03 | 6.42 | +52.8% |
+| 43013 | NOAA-20 (JPSS-1) | 824 | 2.96 | 13.27 | +77.7% |
+| 43070 | IRIDIUM 106 | 780 | 3.21 | 41.10 | +92.2% |
+| 43476 | GRACE-FO 1 | 490 | 2.46 | 144.90 | +98.3% |
+| 48274 | TIANHE (CSS) | 390 | 8.47 | 554.65 | +98.5% |
+| 49260 | LANDSAT 9 | 705 | 27.11 | 44.11 | +38.5% |
+| 56227 | CYGNUS NG-19 | 415 | 5.09 | 481.09 | +98.9% |
+| 57321 | TROPICS-02 | 550 | 3.03 | 53.00 | +94.3% |
+| **Mean** | | | **6.11** | **163.77** | **84.6%** |
+| **Median** | | | **3.21** | **51.02** | **93.7%** |
+
+PINN wins 11/11 validated satellites. 9 additional satellites are pending retraining.
 
 ### Atmospheric Drag (Harris-Priester Model)
 
@@ -368,7 +403,7 @@ GMAT's force model (20x20 gravity, MSISE-90 drag, SRP, Sun/Moon) is orders of ma
 
 3. **MC Dropout uncertainty is illustrative.** The PINN was trained without dropout, so applying dropout at inference provides only an approximate posterior. The resulting covariance ellipsoids and collision probabilities demonstrate the UQ *pipeline* but should not be treated as calibrated uncertainty estimates. A production system would retrain with dropout enabled and validate coverage empirically.
 
-4. **Single architecture and seed.** All results use one Fourier-PINN architecture (8 frequencies, 64-wide, 3 hidden layers) with one random seed. Variance across seeds and sensitivity to hyperparameters have not been characterized.
+4. **Single architecture and seed.** Results use one FourierPINN architecture (8 frequencies, 64-wide, 3 hidden layers, 9,651 params) for 5-orbit and one Neural ODE architecture (32-wide, 2 hidden layers, 1,380 params) for 7-day, both with seed=42. Variance across seeds and sensitivity to hyperparameters have not been characterized.
 
 ### The Two-Body Orbital Mechanics Problem
 
@@ -484,6 +519,29 @@ t_norm -----> [Linear 64] --tanh-->      t_norm ---> Fourier Encoding:
 
 Both networks use `tanh` activations, Xavier-uniform initialization, `float64` precision, Adam optimizer with cosine-annealing LR, and gradient clipping (max_norm = 1.0). The secular drift head captures slow J2-induced precession (RAAN, argument of perigee) that a purely periodic model cannot represent.
 
+### Neural ODE Architecture (7-Day Long-Arc)
+
+For 7-day propagation, the FourierPINN is replaced by a Neural ODE that integrates orbital dynamics directly:
+
+```
+State [x, y, z, vx, vy, vz]
+         |
+         v
+  dx/dt = f_known(x) + f_nn(x)
+         |               |
+    J2-J5 Gravity    CorrectionNetwork (1,380 params)
+    (analytical)     6 -> [32] -> tanh -> [32] -> tanh -> [3]
+                     (learns drag, SRP, third-body residuals)
+         |
+    RK4 Integration (dt=60s)
+    Multiple Shooting (20 segments)
+         |
+         v
+  Predicted trajectory over 7 days
+```
+
+The CorrectionNetwork output is gated by a learnable log-scale parameter (initialized to exp(-6) ~ 0.0025), so corrections start near zero and grow only as training demands. The known physics (J2-J5 gravity) does the heavy lifting while the NN learns a small correction — this is why the model achieves high accuracy with only 1,380 parameters.
+
 ---
 
 ## Repository Structure
@@ -515,6 +573,9 @@ ISEF-PINN/
 |-- frame_conversion.py          # TEME <-> J2000 coordinate frame conversion (astropy)
 |-- generate_gmat_data.py        # Generate GMAT scripts, run them, parse output (--dry-run, --validate)
 |-- compare_pinn_vs_sgp4.py      # Hypothesis test: PINN vs SGP4 against GMAT ground truth
+|-- recompute_sgp4.py            # Re-propagate SGP4 with updated TLEs (preserves PINN results)
+|-- run_full_pipeline.sh         # Run complete pipeline (5-orbit + 7-day) with logging
+|-- RUN_GUIDE.md                 # Detailed guide for running all experiments
 |
 |-- # --- Additional Tools ---
 |-- compare_sgp4.py              # SGP4 vs numerical integrator comparison
@@ -522,7 +583,7 @@ ISEF-PINN/
 |
 |-- src/
 |   |-- __init__.py
-|   |-- models.py                # Canonical FourierPINN and VanillaMLP architectures
+|   |-- models.py                # FourierPINN, NeuralODE, VanillaMLP, CorrectionNetwork
 |   |-- physics.py               # Physical constants, ODEs, normalization, torch residuals
 |   `-- atmosphere.py            # Harris-Priester density model + drag acceleration (torch)
 |
@@ -619,9 +680,9 @@ The 20 satellites span 5 orbit types, with altitudes 388--853 km and inclination
 ## Future Work
 
 1. **GMAT-validated accuracy bounds:** With GMAT ground truth, establish error bounds on PINN propagation accuracy as a function of prediction horizon.
-2. **Long-arc drag regime:** Extend propagation to hundreds of orbits (days to weeks) where atmospheric drag causes measurable orbital decay.
-3. **Transfer learning across constellations:** Fine-tune a PINN trained on one satellite to new satellites with fewer epochs.
-4. **Real-time conjunction screening:** Deploy the trained PINN as a fast surrogate propagator (~3 ms inference) for Monte Carlo conjunction assessment.
+2. **Transfer learning across constellations:** Fine-tune a PINN trained on one satellite to new satellites with fewer epochs.
+3. **Real-time conjunction screening:** Deploy the trained PINN as a fast surrogate propagator (~3 ms inference) for Monte Carlo conjunction assessment.
+4. **Architecture scaling study:** Investigate whether increasing CorrectionNetwork capacity (e.g., 64-wide, 3+ layers) improves long-arc accuracy or leads to overfitting.
 
 ---
 

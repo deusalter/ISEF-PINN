@@ -1,0 +1,237 @@
+======================================================================
+  GMAT High-Fidelity Trajectory Generation
+======================================================================
+
+  Satellites: 20
+  Output dir: C:\Users\abhin\ISEF-PINN\data\gmat_orbits
+  Mode:       7-day long-arc
+  Dry run:    False
+  GMAT:       C:\GMAT\R2022a\bin\GMAT.exe
+
+======================================================================
+  [1/20] CBERS 04A (NORAD 44883)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\44883_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [-3461.474, 6084.870, 3.963] km
+  a=7002.7 km, inc=28.5 deg, ecc=0.0001, T=5831.9 s
+  Running GMAT... done (9464 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\44883_7day.npy
+  span=168.0h, r=[6995.7, 7004.8] km
+
+======================================================================
+  [2/20] TROPICS-01 (NORAD 57320)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\57320_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [-6522.366, -2316.478, 5.612] km
+  a=6926.6 km, inc=29.7 deg, ecc=0.0010, T=5737.1 s
+  Running GMAT... done (9877 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\57320_7day.npy
+  span=168.0h, r=[6913.0, 6935.1] km
+
+======================================================================
+  [3/20] TROPICS-02 (NORAD 57321)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\57321_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [-6502.172, -2373.189, 5.451] km
+  a=6926.6 km, inc=29.7 deg, ecc=0.0010, T=5737.1 s
+  Running GMAT... done (9889 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\57321_7day.npy
+  span=168.0h, r=[6913.0, 6935.1] km
+
+======================================================================
+  [4/20] ORBCOMM FM-5 (NORAD 25063)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\25063_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [56.907, 7158.915, -8.991] km
+  a=7159.9 km, inc=25.0 deg, ecc=0.0010, T=6029.3 s
+  Running GMAT... done (9338 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\25063_7day.npy
+  span=168.0h, r=[7146.8, 7167.7] km
+
+======================================================================
+  [5/20] ISS (ZARYA) (NORAD 25544)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\25544_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [-5990.944, -3200.164, 1.625] km
+  a=6794.9 km, inc=51.6 deg, ecc=0.0006, T=5574.2 s
+  Running GMAT... done (9174 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\25544_7day.npy
+  span=168.0h, r=[6782.5, 6802.8] km
+
+======================================================================
+  [6/20] TIANHE (CSS) (NORAD 48274)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\48274_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [-6763.690, 45.679, 7.420] km
+  a=6765.8 km, inc=41.5 deg, ecc=0.0003, T=5538.5 s
+  Running GMAT... done (11652 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\48274_7day.npy
+  span=168.0h, r=[6754.6, 6770.7] km
+
+======================================================================
+  [7/20] CYGNUS NG-19 (NORAD 56227)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\56227_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [-5906.201, -3357.750, 2.798] km
+  a=6794.9 km, inc=51.6 deg, ecc=0.0003, T=5574.2 s
+  Running GMAT... done (9254 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\56227_7day.npy
+  span=168.0h, r=[6783.9, 6801.1] km
+
+======================================================================
+  [8/20] CREW DRAGON C212 (NORAD 58536)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\58536_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [-5591.019, -3860.590, 3.012] km
+  a=6794.9 km, inc=51.6 deg, ecc=0.0002, T=5574.2 s
+  Running GMAT... done (9173 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\58536_7day.npy
+  span=168.0h, r=[6785.1, 6800.4] km
+
+======================================================================
+  [9/20] STARLINK-1007 (NORAD 44713)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\44713_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [-6818.552, 1215.435, 14.262] km
+  a=6925.3 km, inc=53.1 deg, ecc=0.0001, T=5735.5 s
+  Running GMAT... done (9704 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\44713_7day.npy
+  span=168.0h, r=[6916.7, 6931.3] km
+
+======================================================================
+  [10/20] STARLINK-1008 (NORAD 44714)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\44714_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [-6823.455, 1188.005, 4.715] km
+  a=6925.3 km, inc=53.0 deg, ecc=0.0001, T=5735.5 s
+  Running GMAT... done (9715 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\44714_7day.npy
+  span=168.0h, r=[6916.8, 6931.2] km
+
+======================================================================
+  [11/20] STARLINK-1009 (NORAD 44715)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\44715_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [-6833.617, 1128.343, 4.842] km
+  a=6925.3 km, inc=53.1 deg, ecc=0.0001, T=5735.5 s
+  Running GMAT... done (9659 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\44715_7day.npy
+  span=168.0h, r=[6916.9, 6931.1] km
+
+======================================================================
+  [12/20] STARLINK-1010 (NORAD 44716)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\44716_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [-6843.198, 1068.838, 4.643] km
+  a=6925.3 km, inc=53.0 deg, ecc=0.0001, T=5735.5 s
+  Running GMAT... done (9657 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\44716_7day.npy
+  span=168.0h, r=[6916.7, 6931.3] km
+
+======================================================================
+  [13/20] LANDSAT 9 (NORAD 49260)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\49260_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [1869.499, 6832.521, -8.677] km
+  a=7080.7 km, inc=98.2 deg, ecc=0.0001, T=5929.6 s
+  Running GMAT... done (9234 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\49260_7day.npy
+  span=168.0h, r=[7072.0, 7089.0] km
+
+======================================================================
+  [14/20] SENTINEL-6A (NORAD 46984)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\46984_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [4653.003, 5472.408, -29.649] km
+  a=7179.9 km, inc=66.0 deg, ecc=0.0005, T=6054.7 s
+  Running GMAT... done (8947 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\46984_7day.npy
+  span=168.0h, r=[7168.8, 7189.9] km
+
+======================================================================
+  [15/20] NOAA-20 (JPSS-1) (NORAD 43013)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\43013_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [6785.413, 2431.147, -31.800] km
+  a=7205.2 km, inc=98.7 deg, ecc=0.0001, T=6086.7 s
+  Running GMAT... done (8071 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\43013_7day.npy
+  span=168.0h, r=[7196.9, 7213.4] km
+
+======================================================================
+  [16/20] SUOMI NPP (NORAD 37849)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\37849_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [6696.412, 2666.467, -31.583] km
+  a=7205.2 km, inc=98.7 deg, ecc=0.0001, T=6086.7 s
+  Running GMAT... done (8071 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\37849_7day.npy
+  span=168.0h, r=[7196.9, 7213.4] km
+
+======================================================================
+  [17/20] HUBBLE (HST) (NORAD 20580)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\20580_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [-5271.616, 4478.540, 9.327] km
+  a=6917.1 km, inc=28.5 deg, ecc=0.0003, T=5725.3 s
+  Running GMAT... done (9553 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\20580_7day.npy
+  span=168.0h, r=[6911.2, 6918.3] km
+
+======================================================================
+  [18/20] GRACE-FO 1 (NORAD 43476)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\43476_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [3480.657, 5953.838, -35.190] km
+  a=6890.0 km, inc=89.0 deg, ecc=0.0010, T=5691.7 s
+  Running GMAT... done (9869 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\43476_7day.npy
+  span=168.0h, r=[6874.9, 6904.5] km
+
+======================================================================
+  [19/20] IRIDIUM 106 (NORAD 43070)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\43070_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [5510.006, 4571.916, -30.047] km
+  a=7155.9 km, inc=86.4 deg, ecc=0.0002, T=6024.3 s
+  Running GMAT... done (9055 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\43070_7day.npy
+  span=168.0h, r=[7146.8, 7164.9] km
+
+======================================================================
+  [20/20] COSMOS 2251 DEB (NORAD 36508)
+======================================================================
+  Script: C:\Users\abhin\ISEF-PINN\data\gmat_scripts\36508_7day.script
+  Epoch:  2024-01-01 12:00:00
+  J2000 pos: [1328.678, 7173.625, -86.637] km
+  a=7230.7 km, inc=74.0 deg, ecc=0.0100, T=6119.0 s
+  Running GMAT... done (9276 raw points)
+  Saved: C:\Users\abhin\ISEF-PINN\data\gmat_orbits\36508_7day.npy
+  span=168.0h, r=[7154.3, 7309.2] km
+
+======================================================================
+  SUMMARY
+======================================================================
+  Succeeded: 20/20
+  Failed:    0/20
+  Data in:    C:\Users\abhin\ISEF-PINN\data\gmat_orbits
+

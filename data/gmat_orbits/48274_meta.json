@@ -1,0 +1,26 @@
+{
+  "norad_id": 48274,
+  "name": "TIANHE (CSS)",
+  "a_km": 6765.794080763019,
+  "inc_deg": 41.47,
+  "ecc": 0.0003,
+  "period_s": 5538.461538461539,
+  "n_orbits": 5,
+  "n_points": 5000,
+  "data_source": "GMAT",
+  "force_model": {
+    "gravity": "JGM-2 20x20",
+    "drag": "MSISE-90",
+    "srp": true,
+    "third_body": [
+      "Sun",
+      "Luna"
+    ],
+    "integrator": "RungeKutta89",
+    "accuracy": 1e-12
+  },
+  "epoch_utc": "2024-01-01T12:00:00",
+  "frame": "EarthMJ2000Eq",
+  "cd_a_over_m": 0.018,
+  "raw_gmat_points": 540
+}

@@ -1,0 +1,26 @@
+{
+  "norad_id": 43070,
+  "name": "IRIDIUM 106",
+  "a_km": 7155.863195520104,
+  "inc_deg": 86.39000000000001,
+  "ecc": 0.0002,
+  "period_s": 6024.264398270813,
+  "n_orbits": 5,
+  "n_points": 5000,
+  "data_source": "GMAT",
+  "force_model": {
+    "gravity": "JGM-2 20x20",
+    "drag": "MSISE-90",
+    "srp": true,
+    "third_body": [
+      "Sun",
+      "Luna"
+    ],
+    "integrator": "RungeKutta89",
+    "accuracy": 1e-12
+  },
+  "epoch_utc": "2024-01-01T12:00:00",
+  "frame": "EarthMJ2000Eq",
+  "cd_a_over_m": 0.022,
+  "raw_gmat_points": 456
+}
