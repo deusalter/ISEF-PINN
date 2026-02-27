@@ -188,8 +188,11 @@ class CorrectionNetwork(nn.Module):
         nn.init.zeros_(final.weight)
         nn.init.zeros_(final.bias)
 
-        # Learnable log-scale (starts small: exp(-6) ≈ 0.0025)
-        self.log_scale = nn.Parameter(torch.tensor(-6.0, dtype=torch.float64))
+        # Learnable log-scale (starts at exp(-2) ≈ 0.14 for stronger
+        # gradient signal; zero-init output layer still ensures correction
+        # starts at zero, but weight gradients are amplified so the NN
+        # can escape the near-zero regime faster)
+        self.log_scale = nn.Parameter(torch.tensor(-2.0, dtype=torch.float64))
 
     def forward(self, state_normalized: torch.Tensor) -> torch.Tensor:
         """
@@ -297,6 +300,105 @@ class NeuralODE(nn.Module):
         k4 = self.dynamics(state + dt * k3)
         return state + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
+    def integrate_batched(
+        self,
+        states0: torch.Tensor,
+        rel_times: torch.Tensor,
+        dt: float = 60.0,
+    ) -> torch.Tensor:
+        """Integrate a batch of initial states simultaneously.
+
+        Batched version of the original integrate_to_times: uses exact
+        fractional RK4 steps at each eval time (preserving gradient flow
+        through dynamics at every evaluation point).  All B trajectories
+        are stepped forward in parallel using vectorized dynamics.
+
+        Parameters
+        ----------
+        states0 : (B, 6) batch of initial states [km, km/s]
+        rel_times : (M,) evaluation times relative to t=0 (seconds)
+        dt : float, RK4 step size in seconds
+
+        Returns
+        -------
+        (B, M, 6) predicted states at each eval time
+        """
+        eval_np = rel_times.detach().cpu().numpy()
+        results = []
+        current_states = states0  # (B, 6)
+        current_t = 0.0
+
+        for target_t in eval_np:
+            # Full steps until close to target
+            while current_t + dt < target_t:
+                current_states = self.rk4_step(current_states, dt)
+                current_t += dt
+
+            # Fractional RK4 step to exact eval time
+            remaining = target_t - current_t
+            if remaining > 1e-6:
+                final_states = self.rk4_step(current_states, remaining)
+            else:
+                final_states = current_states
+
+            results.append(final_states)  # (B, 6)
+
+        return torch.stack(results, dim=1)  # (B, M, 6)
+
+    def integrate_batched_hermite(
+        self,
+        states0: torch.Tensor,
+        rel_times: torch.Tensor,
+        dt: float = 60.0,
+    ) -> torch.Tensor:
+        """Fast Hermite-interpolated batch integration (for inference).
+
+        Uses full RK4 steps with Hermite cubic interpolation. Faster than
+        integrate_batched but without per-eval-point gradient flow through
+        dynamics. Best used under torch.no_grad() for predictions.
+
+        Parameters
+        ----------
+        states0 : (B, 6) batch of initial states [km, km/s]
+        rel_times : (M,) evaluation times relative to t=0 (seconds)
+        dt : float, RK4 step size in seconds
+
+        Returns
+        -------
+        (B, M, 6) predicted states at each eval time
+        """
+        t_end = rel_times[-1].item()
+        n_steps = int(math.ceil(t_end / dt))
+
+        # Full RK4 integration with derivatives for Hermite
+        all_states = [states0]
+        all_derivs = [self.dynamics(states0)]
+        current = states0
+        for _ in range(n_steps):
+            current = self.rk4_step(current, dt)
+            all_states.append(current)
+            all_derivs.append(self.dynamics(current))
+        all_states = torch.stack(all_states, dim=0)  # (n_steps+1, B, 6)
+        all_derivs = torch.stack(all_derivs, dim=0)  # (n_steps+1, B, 6)
+
+        # Hermite cubic interpolation
+        step_idx = torch.clamp((rel_times / dt).long(), 0, n_steps - 1)
+        tau = (rel_times - step_idx.to(rel_times.dtype) * dt) / dt
+        tau = tau[:, None, None]  # (M, 1, 1)
+
+        p0 = all_states[step_idx]
+        p1 = all_states[step_idx + 1]
+        m0 = all_derivs[step_idx] * dt
+        m1 = all_derivs[step_idx + 1] * dt
+
+        h00 = 2 * tau**3 - 3 * tau**2 + 1
+        h10 = tau**3 - 2 * tau**2 + tau
+        h01 = -2 * tau**3 + 3 * tau**2
+        h11 = tau**3 - tau**2
+
+        result = h00 * p0 + h10 * m0 + h01 * p1 + h11 * m1
+        return result.permute(1, 0, 2)  # (B, M, 6)
+
     def integrate_to_times(
         self,
         state0: torch.Tensor,
@@ -306,8 +408,8 @@ class NeuralODE(nn.Module):
     ) -> torch.Tensor:
         """Integrate from state0 at t0 to each time in eval_times.
 
-        Uses RK4 with fixed step size dt. Interpolates to exact eval_times
-        using a final fractional step.
+        Uses RK4 with fixed step size dt and linear interpolation to
+        exact eval_times (fast vectorized implementation).
 
         Parameters
         ----------
@@ -323,28 +425,6 @@ class NeuralODE(nn.Module):
         if state0.dim() == 1:
             state0 = state0.unsqueeze(0)  # (1, 6)
 
-        eval_np = eval_times.detach().cpu().numpy()
-        results = []
-        current_state = state0  # (1, 6)
-        current_t = t0
-        eval_idx = 0
-
-        while eval_idx < len(eval_np):
-            target_t = eval_np[eval_idx]
-
-            # Step forward until we reach or pass the target time
-            while current_t + dt < target_t:
-                current_state = self.rk4_step(current_state, dt)
-                current_t += dt
-
-            # Final fractional step to land exactly on target_t
-            remaining = target_t - current_t
-            if remaining > 1e-6:
-                final_state = self.rk4_step(current_state, remaining)
-            else:
-                final_state = current_state
-
-            results.append(final_state.squeeze(0))  # (6,)
-            eval_idx += 1
-
-        return torch.stack(results, dim=0)  # (M, 6)
+        rel_times = eval_times - t0
+        result = self.integrate_batched_hermite(state0, rel_times, dt=dt)
+        return result.squeeze(0)  # (M, 6)

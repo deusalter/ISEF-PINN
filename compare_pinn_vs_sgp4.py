@@ -457,7 +457,7 @@ def train_neural_ode_on_gmat(data, a_km, cd_a_over_m):
     train_t = t_seconds[:n_train]
     train_states = states_km[:n_train]  # (n_train, 6)
     pts_per_seg = max(1, n_train // NODE_N_SEGMENTS)
-    seg_starts = list(range(0, n_train - pts_per_seg, pts_per_seg))
+    seg_starts = list(range(0, n_train, pts_per_seg))
     if not seg_starts:
         seg_starts = [0]
     n_segs = len(seg_starts)
@@ -475,29 +475,34 @@ def train_neural_ode_on_gmat(data, a_km, cd_a_over_m):
         )
         seg_data.append((s0, t_seg, truth_seg))
 
+    # Prepare batched tensors for fast vectorized training
+    all_s0 = torch.stack([s0 for s0, _, _ in seg_data], dim=0)  # (n_segs, 6)
+    ref_t_seg = seg_data[0][1]
+    rel_times = ref_t_seg - ref_t_seg[0]  # relative times (starts at 0)
+    min_seg_pts = min(truth.shape[0] for _, _, truth in seg_data)
+    rel_times = rel_times[:min_seg_pts]
+    all_truth = torch.stack(
+        [truth[:min_seg_pts] for _, _, truth in seg_data], dim=0
+    )  # (n_segs, min_seg_pts, 6)
+
     best_state = None
     best_loss = float("inf")
 
     model.train()
     for ep in range(1, NODE_EPOCHS + 1):
         optimizer.zero_grad()
-        total_loss = torch.tensor(0.0, dtype=torch.float64, device=DEVICE)
 
-        for s0, t_seg, truth_seg in seg_data:
-            # Integrate from segment start to all segment times
-            pred = model.integrate_to_times(
-                s0, float(t_seg[0]), t_seg, dt=NODE_DT
-            )  # (seg_len, 6)
+        # Batched forward: all segments integrated simultaneously
+        pred_batch = model.integrate_batched(
+            all_s0, rel_times, dt=NODE_DT
+        )  # (n_segs, min_seg_pts, 6)
 
-            # Position loss (km)
-            pos_loss = torch.mean((pred[:, :3] - truth_seg[:, :3]) ** 2)
-            # Velocity loss (km/s)
-            vel_loss = torch.mean((pred[:, 3:] - truth_seg[:, 3:]) ** 2)
+        # Position loss (km)
+        pos_loss = torch.mean((pred_batch[:, :, :3] - all_truth[:, :, :3]) ** 2)
+        # Velocity loss (km/s)
+        vel_loss = torch.mean((pred_batch[:, :, 3:] - all_truth[:, :, 3:]) ** 2)
+        total_loss = pos_loss + NODE_VEL_WEIGHT * vel_loss
 
-            seg_loss = pos_loss + NODE_VEL_WEIGHT * vel_loss
-            total_loss = total_loss + seg_loss
-
-        total_loss = total_loss / n_segs
         total_loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
         optimizer.step()
@@ -524,14 +529,11 @@ def train_neural_ode_on_gmat(data, a_km, cd_a_over_m):
     print(f"    Generating predictions (train + test)...")
 
     with torch.no_grad():
-        # Train region: use segment-by-segment integration for accuracy
-        train_pred_list = []
-        for s0, t_seg, _ in seg_data:
-            pred_seg = model.integrate_to_times(
-                s0, float(t_seg[0]), t_seg, dt=NODE_DT
-            )
-            train_pred_list.append(pred_seg)
-        train_pred = torch.cat(train_pred_list, dim=0)  # (~n_train, 6)
+        # Train region: batched segment integration
+        train_pred_batch = model.integrate_batched(
+            all_s0, rel_times, dt=NODE_DT
+        )  # (n_segs, min_seg_pts, 6)
+        train_pred = train_pred_batch.reshape(-1, 6)  # (~n_train, 6)
 
         # Test region: single-shot integration from last training state
         t0_test = t_seconds[n_train - 1]
