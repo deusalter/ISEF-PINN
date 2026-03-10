@@ -79,9 +79,29 @@ _DIVERSE = [
 CATALOG: List[SatelliteEntry] = _LOW_INC + _ISS_LIKE + _STARLINK + _SSO + _DIVERSE
 
 
+# ---------------------------------------------------------------------------
+# Index mapping for universal model (index 0 reserved for unseen satellites)
+# ---------------------------------------------------------------------------
+
+SAT_TO_IDX = {sat.norad_id: i + 1 for i, sat in enumerate(CATALOG)}
+
+# Held-out satellites for generalization testing (one per orbit type)
+HOLDOUT_IDS = {57320, 58536, 44716, 46984}
+
+
 def get_catalog() -> List[SatelliteEntry]:
     """Return the full satellite catalog."""
     return CATALOG
+
+
+def get_train_catalog() -> List[SatelliteEntry]:
+    """Return training satellites (excluding held-out)."""
+    return [s for s in CATALOG if s.norad_id not in HOLDOUT_IDS]
+
+
+def get_holdout_catalog() -> List[SatelliteEntry]:
+    """Return held-out satellites for generalization testing."""
+    return [s for s in CATALOG if s.norad_id in HOLDOUT_IDS]
 
 
 def get_by_norad_id(norad_id: int) -> Optional[SatelliteEntry]:
