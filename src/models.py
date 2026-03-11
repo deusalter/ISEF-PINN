@@ -188,11 +188,8 @@ class CorrectionNetwork(nn.Module):
         nn.init.zeros_(final.weight)
         nn.init.zeros_(final.bias)
 
-        # Learnable log-scale (starts at exp(-2) ≈ 0.14 for stronger
-        # gradient signal; zero-init output layer still ensures correction
-        # starts at zero, but weight gradients are amplified so the NN
-        # can escape the near-zero regime faster)
-        self.log_scale = nn.Parameter(torch.tensor(-2.0, dtype=torch.float64))
+        # Learnable log-scale (starts small: exp(-6) ≈ 0.0025)
+        self.log_scale = nn.Parameter(torch.tensor(-6.0, dtype=torch.float64))
 
     def forward(self, state_normalized: torch.Tensor) -> torch.Tensor:
         """

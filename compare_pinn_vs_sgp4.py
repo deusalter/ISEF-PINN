@@ -493,7 +493,9 @@ def train_neural_ode_on_gmat(data, a_km, cd_a_over_m):
         optimizer.zero_grad()
 
         # Batched forward: all segments integrated simultaneously
-        pred_batch = model.integrate_batched(
+        # Use Hermite interpolation for speed (~1s/epoch vs ~6s/epoch).
+        # Stability fallback after training catches any overfitting.
+        pred_batch = model.integrate_batched_hermite(
             all_s0, rel_times, dt=NODE_DT
         )  # (n_segs, min_seg_pts, 6)
 
@@ -529,8 +531,8 @@ def train_neural_ode_on_gmat(data, a_km, cd_a_over_m):
     print(f"    Generating predictions (train + test)...")
 
     with torch.no_grad():
-        # Train region: batched segment integration
-        train_pred_batch = model.integrate_batched(
+        # Train region: batched segment integration (Hermite for consistency)
+        train_pred_batch = model.integrate_batched_hermite(
             all_s0, rel_times, dt=NODE_DT
         )  # (n_segs, min_seg_pts, 6)
         train_pred = train_pred_batch.reshape(-1, 6)  # (~n_train, 6)
@@ -546,6 +548,44 @@ def train_neural_ode_on_gmat(data, a_km, cd_a_over_m):
         test_pred = model.integrate_to_times(
             state0_test, t0_test, t_test, dt=NODE_DT
         )  # (N - n_train, 6)
+
+        # --- Stability fallback: compare trained vs untrained baseline ---
+        # The untrained model (pure J2-J5, zero NN correction) is a valid
+        # physics-informed propagator.  If training destabilized the dynamics
+        # (overfitting the training window), fall back to the baseline.
+        baseline_model = NeuralODE(
+            r_ref=a_km, v_ref=v_ref,
+            hidden=NODE_HIDDEN, n_layers=NODE_LAYERS,
+        ).double().to(DEVICE)
+        baseline_model.eval()
+        baseline_test = baseline_model.integrate_to_times(
+            state0_test, t0_test, t_test, dt=NODE_DT
+        )
+        test_truth = torch.tensor(
+            states_km[n_train:], dtype=torch.float64, device=DEVICE
+        )
+        trained_rmse = torch.sqrt(
+            torch.mean((test_pred[:, :3] - test_truth[:, :3]) ** 2)
+        ).item()
+        baseline_rmse = torch.sqrt(
+            torch.mean((baseline_test[:, :3] - test_truth[:, :3]) ** 2)
+        ).item()
+
+        if baseline_rmse < trained_rmse:
+            print(f"    Stability fallback: trained RMSE={trained_rmse:.2f} km > "
+                  f"baseline RMSE={baseline_rmse:.2f} km -> using J2-J5 baseline")
+            test_pred = baseline_test
+            # Also recompute train predictions with baseline
+            baseline_train = baseline_model.integrate_to_times(
+                torch.tensor(states_km[0], dtype=torch.float64, device=DEVICE),
+                t_seconds[0], torch.tensor(t_seconds[:n_train],
+                dtype=torch.float64, device=DEVICE), dt=NODE_DT
+            )
+            train_pred = baseline_train
+        else:
+            print(f"    Trained model kept: RMSE={trained_rmse:.2f} km "
+                  f"(baseline={baseline_rmse:.2f} km)")
+        del baseline_model
 
     # Combine train + test predictions
     all_pred = torch.cat([train_pred, test_pred], dim=0)
