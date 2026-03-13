@@ -205,6 +205,90 @@ class CorrectionNetwork(nn.Module):
         return raw * torch.exp(self.log_scale)  # gated output
 
 
+# -- ConditionedCorrectionNetwork -------------------------------------------
+
+class ConditionedCorrectionNetwork(nn.Module):
+    """Correction network conditioned on orbital parameters and satellite embedding.
+
+    Input: 14D = state(6) + phys_params(4) + embedding(4)
+    Output: 3D acceleration correction (normalized, scaled by learnable gate)
+
+    Physical params: [a_km, inc_deg, ecc, cd_a_over_m] (standardized internally).
+    Embedding: per-satellite learned vector from nn.Embedding.
+    Embedding dropout (20%): randomly zeros embedding during training, forcing
+    the physical-params pathway to carry useful information for generalization.
+    """
+
+    def __init__(self, n_satellites: int = 21, embed_dim: int = 4,
+                 hidden: int = 64, n_layers: int = 2,
+                 embed_dropout: float = 0.2):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.embed_dropout = embed_dropout
+
+        # Satellite embedding (index 0 = unseen, initialized to zero)
+        self.embedding = nn.Embedding(n_satellites, embed_dim)
+        nn.init.normal_(self.embedding.weight, mean=0.0, std=0.01)
+        with torch.no_grad():
+            self.embedding.weight[0].zero_()  # index 0 = unseen
+
+        # Physical param normalization constants (computed from catalog)
+        # [a_km, inc_deg, ecc, cd_a_over_m]
+        self.register_buffer("param_mean", torch.tensor(
+            [6987.69, 59.63, 0.0008, 0.0216], dtype=torch.float64))
+        self.register_buffer("param_std", torch.tensor(
+            [152.08, 25.89, 0.0021, 0.0070], dtype=torch.float64))
+
+        # MLP: 14 -> hidden -> hidden -> 3
+        input_dim = 6 + 4 + embed_dim  # state + phys_params + embedding
+        layers = [nn.Linear(input_dim, hidden), nn.Tanh()]
+        for _ in range(n_layers - 1):
+            layers += [nn.Linear(hidden, hidden), nn.Tanh()]
+        layers.append(nn.Linear(hidden, 3))
+        self.net = nn.Sequential(*layers)
+
+        # Xavier init for hidden layers, zero-init for output layer
+        for m in self.net:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.zeros_(m.bias)
+        final = self.net[-1]
+        nn.init.zeros_(final.weight)
+        nn.init.zeros_(final.bias)
+
+        # Learnable log-scale (starts small: exp(-6) ~ 0.0025)
+        self.log_scale = nn.Parameter(torch.tensor(-6.0, dtype=torch.float64))
+
+    def forward(self, state_normalized: torch.Tensor,
+                phys_params: torch.Tensor,
+                sat_idx: torch.Tensor) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        state_normalized : (N, 6) normalized [pos/r_ref, vel/v_ref]
+        phys_params : (N, 4) raw [a_km, inc_deg, ecc, cd_a_over_m]
+        sat_idx : (N,) integer satellite indices
+
+        Returns
+        -------
+        (N, 3) acceleration correction (normalized units)
+        """
+        # Standardize physical params
+        pp = (phys_params - self.param_mean) / self.param_std  # (N, 4)
+
+        # Satellite embedding with dropout
+        emb = self.embedding(sat_idx)  # (N, embed_dim)
+        if self.training and self.embed_dropout > 0:
+            mask = (torch.rand(emb.shape[0], 1, device=emb.device,
+                               dtype=emb.dtype) > self.embed_dropout).to(emb.dtype)
+            emb = emb * mask
+
+        # Concatenate: [state(6), phys_params(4), embedding(4)] = 14D
+        x = torch.cat([state_normalized, pp, emb], dim=1)
+        raw = self.net(x)  # (N, 3)
+        return raw * torch.exp(self.log_scale)
+
+
 # -- NeuralODE ---------------------------------------------------------------
 
 class NeuralODE(nn.Module):
