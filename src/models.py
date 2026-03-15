@@ -509,3 +509,227 @@ class NeuralODE(nn.Module):
         rel_times = eval_times - t0
         result = self.integrate_batched_hermite(state0, rel_times, dt=dt)
         return result.squeeze(0)  # (M, 6)
+
+
+# -- UniversalNeuralODE -----------------------------------------------------
+
+class UniversalNeuralODE(nn.Module):
+    """Universal Neural ODE for multi-satellite orbital propagation.
+
+    Like NeuralODE but r_ref/v_ref are runtime arguments (not fixed attributes),
+    allowing one model to propagate any satellite. The ConditionedCorrectionNetwork
+    receives per-satellite physical parameters and a learned embedding.
+
+    Integration via manual RK4 (no external dependencies).
+    All computations in physical units (km, km/s, seconds).
+    """
+
+    def __init__(self, n_satellites: int = 21, embed_dim: int = 4,
+                 hidden: int = 64, n_layers: int = 2,
+                 embed_dropout: float = 0.2):
+        super().__init__()
+        self.correction = ConditionedCorrectionNetwork(
+            n_satellites=n_satellites, embed_dim=embed_dim,
+            hidden=hidden, n_layers=n_layers,
+            embed_dropout=embed_dropout,
+        )
+
+    def nn_acceleration(self, state_km: torch.Tensor,
+                        r_refs: torch.Tensor, v_refs: torch.Tensor,
+                        phys_params: torch.Tensor,
+                        sat_idxs: torch.Tensor) -> torch.Tensor:
+        """NN correction acceleration in km/s^2.
+
+        Parameters
+        ----------
+        state_km : (B, 6) [pos_km, vel_kms]
+        r_refs : (B,) per-satellite reference radii [km]
+        v_refs : (B,) per-satellite reference velocities [km/s]
+        phys_params : (B, 4) physical parameters
+        sat_idxs : (B,) integer satellite indices
+
+        Returns
+        -------
+        (B, 3) acceleration correction in km/s^2
+        """
+        # Normalize state per-satellite
+        state_norm = torch.empty_like(state_km)
+        state_norm[:, :3] = state_km[:, :3] / r_refs.unsqueeze(1)
+        state_norm[:, 3:] = state_km[:, 3:] / v_refs.unsqueeze(1)
+
+        # a_ref = v_ref^2 / r_ref per satellite
+        a_refs = v_refs ** 2 / r_refs  # (B,)
+
+        a_norm = self.correction(state_norm, phys_params, sat_idxs)  # (B, 3)
+        return a_norm * a_refs.unsqueeze(1)
+
+    def dynamics(self, state_km: torch.Tensor,
+                 r_refs: torch.Tensor, v_refs: torch.Tensor,
+                 phys_params: torch.Tensor,
+                 sat_idxs: torch.Tensor) -> torch.Tensor:
+        """Full RHS: d/dt [pos, vel] = [vel, a_gravity + a_nn].
+
+        Parameters
+        ----------
+        state_km : (B, 6) [pos_km, vel_kms]
+        r_refs, v_refs : (B,) normalization references
+        phys_params : (B, 4)
+        sat_idxs : (B,)
+
+        Returns
+        -------
+        (B, 6) [vel_kms, accel_kms2]
+        """
+        pos = state_km[:, :3]
+        vel = state_km[:, 3:]
+        a_grav = gravity_j2j5_torch(pos)
+        a_nn = self.nn_acceleration(state_km, r_refs, v_refs,
+                                    phys_params, sat_idxs)
+        return torch.cat([vel, a_grav + a_nn], dim=1)
+
+    def rk4_step(self, state: torch.Tensor, dt: float,
+                 r_refs: torch.Tensor, v_refs: torch.Tensor,
+                 phys_params: torch.Tensor,
+                 sat_idxs: torch.Tensor) -> torch.Tensor:
+        """Single RK4 step with conditioning passed through."""
+        args = (r_refs, v_refs, phys_params, sat_idxs)
+        k1 = self.dynamics(state, *args)
+        k2 = self.dynamics(state + 0.5 * dt * k1, *args)
+        k3 = self.dynamics(state + 0.5 * dt * k2, *args)
+        k4 = self.dynamics(state + dt * k3, *args)
+        return state + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+
+    def integrate_batched(
+        self,
+        states0: torch.Tensor,
+        rel_times: torch.Tensor,
+        dt: float,
+        r_refs: torch.Tensor,
+        v_refs: torch.Tensor,
+        phys_params: torch.Tensor,
+        sat_idxs: torch.Tensor,
+    ) -> torch.Tensor:
+        """Integrate a batch of initial states with per-satellite conditioning.
+
+        Parameters
+        ----------
+        states0 : (B, 6) batch of initial states [km, km/s]
+        rel_times : (M,) evaluation times relative to t=0 (seconds)
+        dt : float, RK4 step size in seconds
+        r_refs : (B,) reference radii
+        v_refs : (B,) reference velocities
+        phys_params : (B, 4) physical parameters
+        sat_idxs : (B,) satellite indices
+
+        Returns
+        -------
+        (B, M, 6) predicted states at each eval time
+        """
+        eval_np = rel_times.detach().cpu().numpy()
+        results = []
+        current_states = states0
+        current_t = 0.0
+        args = (r_refs, v_refs, phys_params, sat_idxs)
+
+        for target_t in eval_np:
+            while current_t + dt < target_t:
+                current_states = self.rk4_step(current_states, dt, *args)
+                current_t += dt
+            remaining = target_t - current_t
+            if remaining > 1e-6:
+                final_states = self.rk4_step(current_states, remaining, *args)
+            else:
+                final_states = current_states
+            results.append(final_states)
+
+        return torch.stack(results, dim=1)  # (B, M, 6)
+
+    def integrate_batched_hermite(
+        self,
+        states0: torch.Tensor,
+        rel_times: torch.Tensor,
+        dt: float,
+        r_refs: torch.Tensor,
+        v_refs: torch.Tensor,
+        phys_params: torch.Tensor,
+        sat_idxs: torch.Tensor,
+    ) -> torch.Tensor:
+        """Hermite-interpolated batch integration for fast inference.
+
+        Parameters
+        ----------
+        states0 : (B, 6) batch of initial states [km, km/s]
+        rel_times : (M,) evaluation times relative to t=0 (seconds)
+        dt : float, RK4 step size in seconds
+        r_refs : (B,) reference radii
+        v_refs : (B,) reference velocities
+        phys_params : (B, 4) physical parameters
+        sat_idxs : (B,) satellite indices
+
+        Returns
+        -------
+        (B, M, 6) predicted states at each eval time
+        """
+        t_end = rel_times[-1].item()
+        n_steps = int(math.ceil(t_end / dt))
+        args = (r_refs, v_refs, phys_params, sat_idxs)
+
+        all_states = [states0]
+        all_derivs = [self.dynamics(states0, *args)]
+        current = states0
+        for _ in range(n_steps):
+            current = self.rk4_step(current, dt, *args)
+            all_states.append(current)
+            all_derivs.append(self.dynamics(current, *args))
+        all_states = torch.stack(all_states, dim=0)  # (n_steps+1, B, 6)
+        all_derivs = torch.stack(all_derivs, dim=0)
+
+        step_idx = torch.clamp((rel_times / dt).long(), 0, n_steps - 1)
+        tau = (rel_times - step_idx.to(rel_times.dtype) * dt) / dt
+        tau = tau[:, None, None]
+
+        p0 = all_states[step_idx]
+        p1 = all_states[step_idx + 1]
+        m0 = all_derivs[step_idx] * dt
+        m1 = all_derivs[step_idx + 1] * dt
+
+        h00 = 2 * tau**3 - 3 * tau**2 + 1
+        h10 = tau**3 - 2 * tau**2 + tau
+        h01 = -2 * tau**3 + 3 * tau**2
+        h11 = tau**3 - tau**2
+
+        result = h00 * p0 + h10 * m0 + h01 * p1 + h11 * m1
+        return result.permute(1, 0, 2)  # (B, M, 6)
+
+    def integrate_to_times(
+        self,
+        state0: torch.Tensor,
+        t0: float,
+        eval_times: torch.Tensor,
+        dt: float,
+        r_ref: float,
+        v_ref: float,
+        phys_params: torch.Tensor,
+        sat_idx: int,
+    ) -> torch.Tensor:
+        """Integrate a single satellite from state0 at t0 to eval_times.
+
+        Convenience wrapper: wraps scalars into batch dim=1.
+
+        Returns
+        -------
+        (M, 6) states at eval_times
+        """
+        if state0.dim() == 1:
+            state0 = state0.unsqueeze(0)
+        device = state0.device
+        r_refs = torch.tensor([r_ref], dtype=torch.float64, device=device)
+        v_refs = torch.tensor([v_ref], dtype=torch.float64, device=device)
+        pp = phys_params.unsqueeze(0) if phys_params.dim() == 1 else phys_params
+        si = torch.tensor([sat_idx], dtype=torch.long, device=device)
+
+        rel_times = eval_times - t0
+        result = self.integrate_batched_hermite(
+            state0, rel_times, dt, r_refs, v_refs, pp, si
+        )
+        return result.squeeze(0)  # (M, 6)
