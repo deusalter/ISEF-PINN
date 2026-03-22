@@ -418,11 +418,10 @@ class NeuralODE(nn.Module):
             # Fractional RK4 step to exact eval time
             remaining = target_t - current_t
             if remaining > 1e-6:
-                final_states = self.rk4_step(current_states, remaining)
-            else:
-                final_states = current_states
+                current_states = self.rk4_step(current_states, remaining)
+                current_t = target_t
 
-            results.append(final_states)  # (B, 6)
+            results.append(current_states)  # (B, 6)
 
         return torch.stack(results, dim=1)  # (B, M, 6)
 
@@ -637,10 +636,9 @@ class UniversalNeuralODE(nn.Module):
                 current_t += dt
             remaining = target_t - current_t
             if remaining > 1e-6:
-                final_states = self.rk4_step(current_states, remaining, *args)
-            else:
-                final_states = current_states
-            results.append(final_states)
+                current_states = self.rk4_step(current_states, remaining, *args)
+                current_t = target_t
+            results.append(current_states)
 
         return torch.stack(results, dim=1)  # (B, M, 6)
 
