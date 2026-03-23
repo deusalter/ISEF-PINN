@@ -276,12 +276,13 @@ class ConditionedCorrectionNetwork(nn.Module):
         # Standardize physical params
         pp = (phys_params - self.param_mean) / self.param_std  # (N, 4)
 
-        # Satellite embedding with dropout
+        # Satellite embedding with inverted dropout
+        # Scale surviving embeddings by 1/(1-p) so expected magnitude matches inference
         emb = self.embedding(sat_idx)  # (N, embed_dim)
         if self.training and self.embed_dropout > 0:
             mask = (torch.rand(emb.shape[0], 1, device=emb.device,
                                dtype=emb.dtype) > self.embed_dropout).to(emb.dtype)
-            emb = emb * mask
+            emb = emb * mask / (1.0 - self.embed_dropout)
 
         # Concatenate: [state(6), phys_params(4), embedding(4)] = 14D
         x = torch.cat([state_normalized, pp, emb], dim=1)
