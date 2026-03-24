@@ -13,7 +13,6 @@ Usage:
 
 import argparse
 import json
-import math
 import os
 import sys
 import time
@@ -26,11 +25,9 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 import torch
 import torch.nn as nn
 
-from src.physics import circular_velocity
+from src.physics import circular_velocity, R_EARTH
 from src.models import UniversalNeuralODE
-from satellite_catalog import (
-    get_train_catalog, get_holdout_catalog, SAT_TO_IDX, CATALOG,
-)
+from satellite_catalog import get_train_catalog, SAT_TO_IDX, CATALOG
 
 # ---------------------------------------------------------------------------
 # Device
@@ -81,7 +78,7 @@ def load_satellite_data(norad_id):
 def make_phys_params(sat_entry):
     """Build physical parameter vector [a_km, inc_deg, ecc, cd_a_over_m]."""
     return torch.tensor([
-        sat_entry.approx_alt_km + 6378.137,  # a_km = alt + R_earth
+        sat_entry.approx_alt_km + R_EARTH,
         sat_entry.approx_inc_deg,
         sat_entry.approx_ecc,
         sat_entry.cd_a_over_m,
@@ -160,18 +157,30 @@ def prepare_segments(catalog, device):
         print(f"  {sat.norad_id:>5} {sat.name:<25} {len(seg_starts):>3} segs, "
               f"n_train={n_train}, a_km={a_km:.1f}")
 
+    # Validate that all segments share the same time cadence
+    if segments:
+        cadences = set()
+        for s in segments:
+            rt = s["rel_times"]
+            if len(rt) >= 2:
+                cadences.add(round(float(rt[1] - rt[0]), 4))
+        if len(cadences) > 1:
+            print(f"  WARNING: non-uniform cadences across segments: {cadences}")
+
     return segments, val_data
 
 
-def collate_batch(segments, min_pts):
+def collate_batch(segments, min_pts, common_rel_times):
     """Stack a list of segment dicts into batched tensors.
 
     All segments are truncated to min_pts time points.
+    Uses a pre-validated common relative time grid (all satellites share
+    the same GMAT cadence of ~12.1s).
 
     Returns
     -------
     s0 : (B, 6)
-    rel_times : (min_pts,) -- from first segment
+    rel_times : (min_pts,)
     truth : (B, min_pts, 6)
     r_refs : (B,)
     v_refs : (B,)
@@ -180,7 +189,7 @@ def collate_batch(segments, min_pts):
     """
     device = segments[0]["s0"].device
     s0 = torch.stack([s["s0"] for s in segments])
-    rel_times = segments[0]["rel_times"][:min_pts]
+    rel_times = common_rel_times[:min_pts]
     truth = torch.stack([s["truth"][:min_pts] for s in segments])
     r_refs = torch.tensor([s["r_ref"] for s in segments],
                           dtype=torch.float64, device=device)
@@ -253,9 +262,12 @@ def main():
         print("ERROR: No segments loaded. Check GMAT data files.")
         sys.exit(1)
 
-    # Find minimum segment length for batching
+    # Find minimum segment length and build common relative time grid
     min_pts = min(s["truth"].shape[0] for s in segments)
     print(f"Min pts/segment: {min_pts}")
+
+    # All GMAT data shares ~12.1s cadence, so use first segment's grid
+    common_rel_times = segments[0]["rel_times"][:min_pts]
 
     # Build model
     n_sats = len(CATALOG) + 1  # +1 for index 0 (unseen)
@@ -290,114 +302,117 @@ def main():
         log_file.write(msg + "\n")
         log_file.flush()
 
-    log(f"\nTraining started at {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    log(f"{'='*70}")
+    try:
+        log(f"\nTraining started at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        log(f"{'='*70}")
 
-    model.train()
-    for ep in range(1, epochs + 1):
-        # Shuffle segments and form mini-batches
-        perm = np.random.permutation(len(segments))
-        epoch_loss = 0.0
-        n_batches = 0
+        model.train()
+        for ep in range(1, epochs + 1):
+            # Shuffle segments and form mini-batches
+            perm = np.random.permutation(len(segments))
+            epoch_loss = 0.0
+            n_batches = 0
 
-        for batch_start in range(0, len(segments), batch_size):
-            batch_idx = perm[batch_start:batch_start + batch_size]
-            batch_segs = [segments[i] for i in batch_idx]
+            for batch_start in range(0, len(segments), batch_size):
+                batch_idx = perm[batch_start:batch_start + batch_size]
+                batch_segs = [segments[i] for i in batch_idx]
 
-            s0, rel_times, truth, r_refs, v_refs, pp, si = collate_batch(
-                batch_segs, min_pts
-            )
-
-            optimizer.zero_grad()
-
-            pred = model.integrate_batched_hermite(
-                s0, rel_times, DT, r_refs, v_refs, pp, si
-            )  # (B, min_pts, 6)
-
-            pos_loss = torch.mean((pred[:, :, :3] - truth[:, :, :3]) ** 2)
-            vel_loss = torch.mean((pred[:, :, 3:] - truth[:, :, 3:]) ** 2)
-            total_loss = pos_loss + VEL_WEIGHT * vel_loss
-
-            total_loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
-            optimizer.step()
-
-            epoch_loss += total_loss.item()
-            n_batches += 1
-
-        scheduler.step()
-        avg_loss = epoch_loss / max(n_batches, 1)
-
-        # Checkpoint best training loss
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            best_state = {k: v.clone() for k, v in model.state_dict().items()}
-
-        # Logging
-        if ep % 50 == 0 or ep == 1 or ep == epochs:
-            lr_now = scheduler.get_last_lr()[0]
-            log_s = model.correction.log_scale.item()
-            msg = (f"  ep={ep:>5}/{epochs}  loss={avg_loss:.4e}  "
-                   f"best={best_loss:.4e}  lr={lr_now:.1e}  "
-                   f"log_scale={log_s:.2f}")
-            log(msg)
-
-        # Validation
-        if ep % VAL_INTERVAL == 0 or ep == epochs:
-            if val_data:
-                val_results = validate(model, val_data, DT)
-                val_msg = "  VAL: " + ", ".join(
-                    f"{nid}={rmse:.2f}km" for nid, rmse in val_results.items()
+                s0, rel_times, truth, r_refs, v_refs, pp, si = collate_batch(
+                    batch_segs, min_pts, common_rel_times
                 )
-                log(val_msg)
-                mean_val = np.mean(list(val_results.values()))
-                if mean_val < best_val_rmse:
-                    best_val_rmse = mean_val
-                    # Save val-best checkpoint
-                    torch.save(model.state_dict(),
-                               "outputs/universal_model_valbest.pt")
-                model.train()
 
-    elapsed = time.time() - train_start
-    log(f"\nTraining completed in {elapsed/60:.1f} minutes")
-    log(f"Best training loss: {best_loss:.4e}")
-    if val_data:
-        log(f"Best validation RMSE: {best_val_rmse:.2f} km")
+                optimizer.zero_grad()
 
-    # Restore best model and save
-    if best_state is not None:
-        model.load_state_dict(best_state)
+                pred = model.integrate_batched_hermite(
+                    s0, rel_times, DT, r_refs, v_refs, pp, si
+                )  # (B, min_pts, 6)
 
-    save_path = "outputs/universal_model.pt"
-    torch.save(model.state_dict(), save_path)
-    log(f"Model saved to {save_path}")
+                pos_loss = torch.mean((pred[:, :, :3] - truth[:, :, :3]) ** 2)
+                vel_loss = torch.mean((pred[:, :, 3:] - truth[:, :, 3:]) ** 2)
+                total_loss = pos_loss + VEL_WEIGHT * vel_loss
 
-    # Save training config
-    config = {
-        "epochs": epochs,
-        "batch_size": batch_size,
-        "lr": args.lr,
-        "lr_min": LR_MIN,
-        "hidden": HIDDEN,
-        "n_layers": N_LAYERS,
-        "embed_dim": EMBED_DIM,
-        "embed_dropout": EMBED_DROPOUT,
-        "dt": DT,
-        "vel_weight": VEL_WEIGHT,
-        "n_segments_per_sat": N_SEGMENTS_PER_SAT,
-        "train_frac": TRAIN_FRAC,
-        "n_train_sats": len(catalog),
-        "n_segments": len(segments),
-        "best_loss": best_loss,
-        "best_val_rmse": best_val_rmse,
-        "elapsed_minutes": elapsed / 60,
-        "device": str(DEVICE),
-        "smoke": args.smoke,
-    }
-    with open("outputs/universal_train_config.json", "w") as f:
-        json.dump(config, f, indent=2)
+                total_loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
+                optimizer.step()
 
-    log_file.close()
+                epoch_loss += total_loss.item()
+                n_batches += 1
+
+            scheduler.step()
+            avg_loss = epoch_loss / max(n_batches, 1)
+
+            # Checkpoint best training loss
+            if avg_loss < best_loss:
+                best_loss = avg_loss
+                best_state = {k: v.clone() for k, v in model.state_dict().items()}
+
+            # Logging
+            if ep % 50 == 0 or ep == 1 or ep == epochs:
+                lr_now = scheduler.get_last_lr()[0]
+                log_s = model.correction.log_scale.item()
+                msg = (f"  ep={ep:>5}/{epochs}  loss={avg_loss:.4e}  "
+                       f"best={best_loss:.4e}  lr={lr_now:.1e}  "
+                       f"log_scale={log_s:.2f}")
+                log(msg)
+
+            # Validation
+            if ep % VAL_INTERVAL == 0 or ep == epochs:
+                if val_data:
+                    val_results = validate(model, val_data, DT)
+                    val_msg = "  VAL: " + ", ".join(
+                        f"{nid}={rmse:.2f}km" for nid, rmse in val_results.items()
+                    )
+                    log(val_msg)
+                    mean_val = np.mean(list(val_results.values()))
+                    if mean_val < best_val_rmse:
+                        best_val_rmse = mean_val
+                        # Save val-best checkpoint
+                        torch.save(model.state_dict(),
+                                   "outputs/universal_model_valbest.pt")
+                    model.train()
+
+        elapsed = time.time() - train_start
+        log(f"\nTraining completed in {elapsed/60:.1f} minutes")
+        log(f"Best training loss: {best_loss:.4e}")
+        if val_data:
+            log(f"Best validation RMSE: {best_val_rmse:.2f} km")
+
+        # Restore best model and save
+        if best_state is not None:
+            model.load_state_dict(best_state)
+
+        save_path = "outputs/universal_model.pt"
+        torch.save(model.state_dict(), save_path)
+        log(f"Model saved to {save_path}")
+
+        # Save training config
+        config = {
+            "epochs": epochs,
+            "batch_size": batch_size,
+            "lr": args.lr,
+            "lr_min": LR_MIN,
+            "hidden": HIDDEN,
+            "n_layers": N_LAYERS,
+            "embed_dim": EMBED_DIM,
+            "embed_dropout": EMBED_DROPOUT,
+            "dt": DT,
+            "vel_weight": VEL_WEIGHT,
+            "n_segments_per_sat": N_SEGMENTS_PER_SAT,
+            "train_frac": TRAIN_FRAC,
+            "n_train_sats": len(catalog),
+            "n_segments": len(segments),
+            "best_loss": best_loss,
+            "best_val_rmse": best_val_rmse,
+            "elapsed_minutes": elapsed / 60,
+            "device": str(DEVICE),
+            "smoke": args.smoke,
+        }
+        with open("outputs/universal_train_config.json", "w") as f:
+            json.dump(config, f, indent=2)
+
+    finally:
+        log_file.close()
+
     print(f"\nLog saved to {log_path}")
 
 
