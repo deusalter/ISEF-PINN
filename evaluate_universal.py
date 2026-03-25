@@ -37,11 +37,10 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 import torch
 
-from src.physics import MU, circular_velocity
+from src.physics import MU, R_EARTH, circular_velocity
 from src.models import UniversalNeuralODE
 from satellite_catalog import (
-    get_catalog, get_by_norad_id, get_train_catalog, get_holdout_catalog,
-    SAT_TO_IDX, HOLDOUT_IDS, CATALOG,
+    get_catalog, get_by_norad_id, SAT_TO_IDX, HOLDOUT_IDS, CATALOG,
 )
 from download_tle import load_tle
 from frame_conversion import teme_to_j2000_batch
@@ -58,7 +57,7 @@ DT = 60.0
 def make_phys_params(sat_entry, device):
     """Build physical parameter vector [a_km, inc_deg, ecc, cd_a_over_m]."""
     return torch.tensor([
-        sat_entry.approx_alt_km + 6378.137,
+        sat_entry.approx_alt_km + R_EARTH,
         sat_entry.approx_inc_deg,
         sat_entry.approx_ecc,
         sat_entry.cd_a_over_m,
@@ -156,17 +155,15 @@ def evaluate_satellite(model, norad_id, sat_entry, device):
     ode_max_err = float(np.max(ode_err))
     sgp4_max_err = float(np.max(sgp4_err))
 
-    # Energy drift
-    dt_data = float(t_seconds[1] - t_seconds[0])
-
-    def _energy_drift(pos_arr):
-        vel = np.diff(pos_arr, axis=0) / dt_data
-        v2 = np.sum(vel ** 2, axis=1)
-        r = np.linalg.norm(pos_arr[:-1], axis=1)
+    # Energy drift (use stored velocities from NeuralODE, not finite differences)
+    def _energy_drift_6d(state_arr):
+        """Compute max energy drift from full 6D state [pos, vel]."""
+        r = np.linalg.norm(state_arr[:, :3], axis=1)
+        v2 = np.sum(state_arr[:, 3:] ** 2, axis=1)
         energy = 0.5 * v2 - MU / r
         return float(np.max(np.abs(energy - energy[0])))
 
-    ode_energy = _energy_drift(ode_pred_test[:, :3])
+    ode_energy = _energy_drift_6d(ode_pred_test)
 
     # Inference time (universal NeuralODE)
     n_timing = 3
@@ -348,11 +345,23 @@ def main():
         print("Run train_universal.py first.")
         sys.exit(1)
 
-    # Load model
+    # Load model architecture from training config (fall back to defaults)
+    config_path = "outputs/universal_train_config.json"
+    hidden, n_layers, embed_dim = 64, 2, 4  # defaults
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            train_config = json.load(f)
+        hidden = train_config.get("hidden", hidden)
+        n_layers = train_config.get("n_layers", n_layers)
+        embed_dim = train_config.get("embed_dim", embed_dim)
+        print(f"Config: hidden={hidden}, n_layers={n_layers}, embed_dim={embed_dim}")
+    else:
+        print(f"WARNING: {config_path} not found, using default architecture")
+
     n_sats = len(CATALOG) + 1
     model = UniversalNeuralODE(
-        n_satellites=n_sats, embed_dim=4,
-        hidden=64, n_layers=2,
+        n_satellites=n_sats, embed_dim=embed_dim,
+        hidden=hidden, n_layers=n_layers,
     ).double().to(DEVICE)
     model.load_state_dict(torch.load(args.model, map_location=DEVICE,
                                      weights_only=True))
