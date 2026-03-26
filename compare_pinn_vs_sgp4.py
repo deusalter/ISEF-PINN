@@ -49,7 +49,7 @@ import torch.nn as nn
 
 from src.physics import MU, R_EARTH, J2, J3, J4, J5, NormalizationParams
 from src.models import FourierPINN, NeuralODE
-from src.atmosphere import drag_acceleration_torch
+
 from satellite_catalog import get_catalog, get_by_norad_id
 from download_tle import load_tle
 from frame_conversion import teme_to_j2000_batch
@@ -199,80 +199,6 @@ def compute_j2_physics_loss(model, t_col, R_NORM, MU_NORM=1.0):
     ], dim=1)
 
     residual = acc + gravity - a_j2 - a_j3 - a_j4 - a_j5
-    return torch.mean(residual ** 2)
-
-
-def compute_j2_drag_physics_loss(model, t_col, R_NORM, norm, MU_NORM, cd_a_over_m):
-    """J2-J5 + atmospheric drag physics residual (for long-arc propagation)."""
-    pos = model(t_col)
-    ones = torch.ones(t_col.shape[0], dtype=torch.float64, device=t_col.device)
-
-    vel = []
-    for i in range(3):
-        v_i = torch.autograd.grad(
-            pos[:, i], t_col, ones, create_graph=True, retain_graph=True
-        )[0]
-        vel.append(v_i)
-    vel = torch.cat(vel, dim=1)
-
-    acc = []
-    for i in range(3):
-        a_i = torch.autograd.grad(
-            vel[:, i], t_col, ones, create_graph=True, retain_graph=True
-        )[0]
-        acc.append(a_i)
-    acc = torch.cat(acc, dim=1)
-
-    x_n, y_n, z_n = pos[:, 0:1], pos[:, 1:2], pos[:, 2:3]
-    r = torch.norm(pos, dim=1, keepdim=True).clamp(min=1e-3)
-    r2, r3, r5, r7 = r**2, r**3, r**5, r**7
-
-    gravity = MU_NORM * pos / r3
-
-    z2_r2 = (z_n / r) ** 2
-    j2_coeff = -1.5 * J2 * MU_NORM * (R_NORM ** 2) / r5
-    a_j2 = torch.cat([
-        j2_coeff * x_n * (1.0 - 5.0 * z2_r2),
-        j2_coeff * y_n * (1.0 - 5.0 * z2_r2),
-        j2_coeff * z_n * (3.0 - 5.0 * z2_r2),
-    ], dim=1)
-
-    j3_xy_fac = -2.5 * J3 * MU_NORM * (R_NORM ** 3) / r7
-    j3_xy_term = j3_xy_fac * (3.0 * z_n - 7.0 * z_n ** 3 / r2)
-    a_j3 = torch.cat([
-        j3_xy_term * x_n,
-        j3_xy_term * y_n,
-        (-0.5 * J3 * MU_NORM * (R_NORM ** 3) / r5) * (
-            30.0 * z_n**2 / r2 - 35.0 * z_n**4 / r2**2 - 3.0
-        ),
-    ], dim=1)
-
-    j4_fac = J4 * MU_NORM * (R_NORM ** 4) / r7
-    z4_r4 = z_n**4 / r2**2
-    j4_xy = 1.875 * j4_fac * (1.0 - 14.0 * z2_r2 + 21.0 * z4_r4)
-    a_j4 = torch.cat([
-        j4_xy * x_n,
-        j4_xy * y_n,
-        0.625 * j4_fac * z_n * (15.0 - 70.0 * z2_r2 + 63.0 * z4_r4),
-    ], dim=1)
-
-    r9 = r7 * r2
-    z6_r6 = z4_r4 * z2_r2
-    j5_fac = J5 * MU_NORM * (R_NORM ** 5)
-    j5_xy = (21.0 / 8.0) * j5_fac * z_n / r9 * (33.0 * z4_r4 - 30.0 * z2_r2 + 5.0)
-    a_j5 = torch.cat([
-        j5_xy * x_n,
-        j5_xy * y_n,
-        (3.0 / 8.0) * j5_fac / r7 * (231.0 * z6_r6 - 315.0 * z4_r4 + 105.0 * z2_r2 - 5.0),
-    ], dim=1)
-
-    # Atmospheric drag (convert to physical units, call drag model, renormalize)
-    pos_km = pos * norm.r_ref
-    vel_kms = vel * norm.v_ref
-    a_drag_kms2 = drag_acceleration_torch(pos_km, vel_kms, cd_a_over_m)
-    a_drag_normalized = a_drag_kms2 * (norm.t_ref ** 2 / norm.r_ref)
-
-    residual = acc + gravity - a_j2 - a_j3 - a_j4 - a_j5 - a_drag_normalized
     return torch.mean(residual ** 2)
 
 
@@ -531,11 +457,16 @@ def train_neural_ode_on_gmat(data, a_km, cd_a_over_m):
     print(f"    Generating predictions (train + test)...")
 
     with torch.no_grad():
-        # Train region: batched segment integration (Hermite for consistency)
-        train_pred_batch = model.integrate_batched_hermite(
-            all_s0, rel_times, dt=NODE_DT
-        )  # (n_segs, min_seg_pts, 6)
-        train_pred = train_pred_batch.reshape(-1, 6)  # (~n_train, 6)
+        # Train region: single-shot integration from initial state
+        state0_train = torch.tensor(
+            states_km[0], dtype=torch.float64, device=DEVICE
+        )
+        t_train = torch.tensor(
+            t_seconds[:n_train], dtype=torch.float64, device=DEVICE
+        )
+        train_pred = model.integrate_to_times(
+            state0_train, t_seconds[0], t_train, dt=NODE_DT
+        )  # (n_train, 6)
 
         # Test region: single-shot integration from last training state
         t0_test = t_seconds[n_train - 1]
@@ -587,16 +518,9 @@ def train_neural_ode_on_gmat(data, a_km, cd_a_over_m):
                   f"(baseline={baseline_rmse:.2f} km)")
         del baseline_model
 
-    # Combine train + test predictions
+    # Combine train + test predictions (single-shot: exact N points)
     all_pred = torch.cat([train_pred, test_pred], dim=0)
-    ode_pred = all_pred.cpu().numpy()
-
-    # Pad if segment-based train prediction has fewer points than n_train
-    if ode_pred.shape[0] < N:
-        pad = np.tile(ode_pred[-1:], (N - ode_pred.shape[0], 1))
-        ode_pred = np.concatenate([ode_pred, pad], axis=0)
-    # Trim if we have excess from segment boundaries
-    ode_pred = ode_pred[:N]
+    ode_pred = all_pred.cpu().numpy()[:N]
 
     return ode_pred, n_train, model, norm
 
@@ -723,10 +647,6 @@ def compare_satellite(norad_id, name, orbit_type, cd_a_over_m=0.022,
             gmat_data, a_km, cd_a_over_m
         )
         pinn_pred_km = ode_pred[:, :3]
-        # For inference timing, we need a tensor of all times
-        t_all_tensor = torch.tensor(
-            t_seconds[:, None], dtype=torch.float64, device=DEVICE
-        )
     else:
         # Train FourierPINN (5-orbit mode, unchanged)
         print(f"  Training PINN on first {TRAIN_FRAC*100:.0f}% of window data...")
