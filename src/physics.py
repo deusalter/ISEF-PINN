@@ -477,7 +477,7 @@ def gravity_j2j5_torch(pos_km: torch.Tensor) -> torch.Tensor:
     a_j4 = torch.cat([
         j4_xy * x,
         j4_xy * y,
-        0.625 * j4_fac * z * (15.0 - 70.0 * z2_r2 + 63.0 * z4_r4),
+        0.625 * j4_fac * z * (9.0 - 70.0 * z2_r2 + 63.0 * z4_r4),
     ], dim=1)
 
     # J5

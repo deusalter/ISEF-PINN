@@ -184,7 +184,7 @@ def compute_j2_physics_loss(model, t_col, R_NORM, MU_NORM=1.0):
     a_j4 = torch.cat([
         j4_xy * x_n,
         j4_xy * y_n,
-        0.625 * j4_fac * z_n * (15.0 - 70.0 * z2_r2 + 63.0 * z4_r4),
+        0.625 * j4_fac * z_n * (9.0 - 70.0 * z2_r2 + 63.0 * z4_r4),
     ], dim=1)
 
     # -- J5 perturbation (odd harmonic, ~0.02% of J2) --
