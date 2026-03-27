@@ -235,9 +235,9 @@ class ConditionedCorrectionNetwork(nn.Module):
         # Physical param normalization constants (computed from catalog)
         # [a_km, inc_deg, ecc, cd_a_over_m]
         self.register_buffer("param_mean", torch.tensor(
-            [6987.69, 59.63, 0.0008, 0.0216], dtype=torch.float64))
+            [6986.29, 58.04, 0.0008, 0.0216], dtype=torch.float64))
         self.register_buffer("param_std", torch.tensor(
-            [152.08, 25.89, 0.0021, 0.0070], dtype=torch.float64))
+            [150.16, 24.44, 0.0021, 0.0070], dtype=torch.float64))
 
         # MLP: 14 -> hidden -> hidden -> 3
         input_dim = 6 + 4 + embed_dim  # state + phys_params + embedding

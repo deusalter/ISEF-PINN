@@ -60,7 +60,7 @@ _STARLINK = [
 # ---------------------------------------------------------------------------
 _SSO = [
     SatelliteEntry(49260, "LANDSAT 9",           "sun-synchronous", 705.0, 98.2, 0.0001, cd_a_over_m=0.015),
-    SatelliteEntry(46984, "SENTINEL-6A",         "sun-synchronous", 830.0, 97.8, 0.0005, cd_a_over_m=0.012),
+    SatelliteEntry(46984, "SENTINEL-6A",         "sun-synchronous", 802.0, 66.04, 0.0005, cd_a_over_m=0.012),
     SatelliteEntry(43013, "NOAA-20 (JPSS-1)",    "sun-synchronous", 824.0, 98.7, 0.0001, cd_a_over_m=0.015),
     SatelliteEntry(37849, "SUOMI NPP",           "sun-synchronous", 824.0, 98.7, 0.0001, cd_a_over_m=0.015),
 ]
