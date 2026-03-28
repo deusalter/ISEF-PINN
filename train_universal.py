@@ -66,7 +66,7 @@ def load_satellite_data(norad_id):
     or (None, None) if not found
     """
     data_path = f"data/gmat_orbits/{norad_id}_7day.npy"
-    meta_path = f"data/gmat_orbits/{norad_id}_meta.json"
+    meta_path = f"data/gmat_orbits/{norad_id}_7day_meta.json"
     if not os.path.exists(data_path) or not os.path.exists(meta_path):
         return None, None
     data = np.load(data_path)
@@ -327,8 +327,12 @@ def main():
                     s0, rel_times, DT, r_refs, v_refs, pp, si
                 )  # (B, min_pts, 6)
 
-                pos_loss = torch.mean((pred[:, :, :3] - truth[:, :, :3]) ** 2)
-                vel_loss = torch.mean((pred[:, :, 3:] - truth[:, :, 3:]) ** 2)
+                # Normalize losses by reference scales so position and velocity
+                # contribute comparably (raw km vs km/s differ by ~1000x)
+                pos_err = (pred[:, :, :3] - truth[:, :, :3]) / r_refs[:, None, None]
+                vel_err = (pred[:, :, 3:] - truth[:, :, 3:]) / v_refs[:, None, None]
+                pos_loss = torch.mean(pos_err ** 2)
+                vel_loss = torch.mean(vel_err ** 2)
                 total_loss = pos_loss + VEL_WEIGHT * vel_loss
 
                 total_loss.backward()
@@ -377,9 +381,14 @@ def main():
         if val_data:
             log(f"Best validation RMSE: {best_val_rmse:.2f} km")
 
-        # Restore best model and save
-        if best_state is not None:
+        # Restore best model: prefer validation-best, fall back to train-best
+        valbest_path = "outputs/universal_model_valbest.pt"
+        if os.path.exists(valbest_path) and best_val_rmse < float("inf"):
+            model.load_state_dict(torch.load(valbest_path, weights_only=True))
+            log(f"Restored validation-best checkpoint (RMSE={best_val_rmse:.2f} km)")
+        elif best_state is not None:
             model.load_state_dict(best_state)
+            log("Restored training-best checkpoint (no val-best available)")
 
         save_path = "outputs/universal_model.pt"
         torch.save(model.state_dict(), save_path)
