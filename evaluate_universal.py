@@ -88,7 +88,7 @@ def evaluate_satellite(model, norad_id, sat_entry, device):
     """
     # Load data
     data_path = f"data/gmat_orbits/{norad_id}_7day.npy"
-    meta_path = f"data/gmat_orbits/{norad_id}_meta.json"
+    meta_path = f"data/gmat_orbits/{norad_id}_7day_meta.json"
     if not os.path.exists(data_path) or not os.path.exists(meta_path):
         print(f"  SKIP {norad_id}: no 7-day data")
         return None
